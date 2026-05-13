@@ -4,12 +4,22 @@ import { useState } from "react";
 
 const VEHICLES = [
   { label: "Otobüs / Metro / Tramvay", short: "Otobüs · Metro · Tramvay", icon: "◆", price: 42.0 },
-  { label: "Metrobüs (kısa mesafe)", short: "Metrobüs · kısa", icon: "▶", price: 30.07 },
-  { label: "Metrobüs (uzun mesafe)", short: "Metrobüs · uzun", icon: "▶▶", price: 51.96 },
-  { label: "Vapur — Kadıköy / Eminönü", short: "Vapur", icon: "≈", price: 59.28 },
+  { label: "Metrobüs · 1 durak", short: "Metrobüs 1", icon: "▶", price: 30.07 },
+  { label: "Metrobüs · 2 durak", short: "Metrobüs 2", icon: "▶", price: 35.97 },
+  { label: "Metrobüs · 3 durak", short: "Metrobüs 3", icon: "▶", price: 42.0 },
+  { label: "Metrobüs · 4–9 durak", short: "Metrobüs 4–9", icon: "▶▶", price: 48.01 },
+  { label: "Metrobüs · 10–15 durak", short: "Metrobüs 10–15", icon: "▶▶", price: 52.73 },
+  { label: "Metrobüs · 16–21 durak", short: "Metrobüs 16–21", icon: "▶▶", price: 55.17 },
+  { label: "Metrobüs · 22–27 durak", short: "Metrobüs 22–27", icon: "▶▶", price: 56.97 },
+  { label: "Metrobüs · 28–33 durak", short: "Metrobüs 28–33", icon: "▶▶▶", price: 58.87 },
+  { label: "Metrobüs · 34–43+ durak", short: "Metrobüs 34+", icon: "▶▶▶", price: 62.35 },
   { label: "Marmaray (1–7 durak)", short: "Marmaray", icon: "═", price: 34.0 },
+  { label: "Vapur — Kadıköy / Eminönü", short: "Vapur", icon: "≈", price: 59.28 },
   { label: "1. aktarma indirimi", short: "1. aktarma", icon: "↻", price: 31.27 },
   { label: "2. aktarma indirimi", short: "2. aktarma", icon: "↻↻", price: 24.02 },
+  { label: "3. aktarma indirimi", short: "3. aktarma", icon: "↻↻↻", price: 15.62 },
+  { label: "4. aktarma indirimi", short: "4. aktarma", icon: "↻↻↻", price: 15.62 },
+  { label: "5. aktarma indirimi", short: "5. aktarma", icon: "↻↻↻", price: 15.62 },
 ];
 
 const fmt = (n: number) =>
@@ -27,14 +37,14 @@ const defaultStandard: Profile = {
   days: 18,
   going: [
     { id: uid++, vIdx: 0, label: "62 / 62G", isTransfer: false },
-    { id: uid++, vIdx: 2, label: "34AS / 34G", isTransfer: false },
-    { id: uid++, vIdx: 5, label: "M4 Metro", isTransfer: true },
-    { id: uid++, vIdx: 6, label: "14BK / 20U", isTransfer: true },
+    { id: uid++, vIdx: 5, label: "34AS / 34G", isTransfer: false },
+    { id: uid++, vIdx: 12, label: "M4 Metro", isTransfer: true },
+    { id: uid++, vIdx: 13, label: "14BK / 20U", isTransfer: true },
   ],
   returning: [
     { id: uid++, vIdx: 0, label: "14BK / 20U", isTransfer: false },
-    { id: uid++, vIdx: 2, label: "Metrobüs", isTransfer: false },
-    { id: uid++, vIdx: 5, label: "62", isTransfer: true },
+    { id: uid++, vIdx: 5, label: "Metrobüs", isTransfer: false },
+    { id: uid++, vIdx: 12, label: "62", isTransfer: true },
   ],
 };
 
