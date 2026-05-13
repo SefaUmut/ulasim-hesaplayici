@@ -1,6 +1,40 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { supabase } from "@/lib/supabase";
+import type { Session } from "@supabase/supabase-js";
+
+// Aktarma indirim sırası: 1., 2., 3., 4., 5. aktarma fiyatları
+const AKTARMA_PRICES = [31.27, 24.02, 15.62, 15.62, 15.62];
+
+// Bir bacak listesi için her bacağın gerçek (efektif) fiyatını döner.
+// İBB kuralı:
+//   • Otobüs / metro / tramvay "aktarmalı" işaretliyse → AKTARMA_PRICES tarifesinden sıra
+//     (1.→31,27 / 2.→24,02 / 3-5.→15,62) ve aktarma sayacı bir artar.
+//   • Metrobüs "aktarmalı" olsa da kendi durak fiyatından ödenir, sayaç ETKİLENMEZ.
+//   • Marmaray / Vapur de kendi fiyatından ödenir, sayaç etkilenmez.
+function computeLegPrices(legs: { vIdx: number; isTransfer: boolean }[]): number[] {
+  let aktarmaCount = 0;
+  return legs.map((l) => {
+    const v = VEHICLES[l.vIdx];
+    const eligibleForAktarma =
+      !v.label.startsWith("Metrobüs") &&
+      !v.label.startsWith("Marmaray") &&
+      !v.label.startsWith("Vapur");
+
+    if (l.isTransfer && eligibleForAktarma) {
+      const price = AKTARMA_PRICES[Math.min(aktarmaCount, AKTARMA_PRICES.length - 1)];
+      aktarmaCount++;
+      return price;
+    }
+    return v.price;
+  });
+}
+
+const MONTHS_TR = [
+  "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
+  "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık",
+];
 
 const VEHICLES = [
   { label: "Otobüs / Metro / Tramvay", short: "Otobüs · Metro · Tramvay", icon: "◆", price: 42.0 },
@@ -15,11 +49,12 @@ const VEHICLES = [
   { label: "Metrobüs · 34–43+ durak", short: "Metrobüs 34+", icon: "▶▶▶", price: 62.35 },
   { label: "Marmaray (1–7 durak)", short: "Marmaray", icon: "═", price: 34.0 },
   { label: "Vapur — Kadıköy / Eminönü", short: "Vapur", icon: "≈", price: 59.28 },
-  { label: "1. aktarma indirimi", short: "1. aktarma", icon: "↻", price: 31.27 },
-  { label: "2. aktarma indirimi", short: "2. aktarma", icon: "↻↻", price: 24.02 },
-  { label: "3. aktarma indirimi", short: "3. aktarma", icon: "↻↻↻", price: 15.62 },
-  { label: "4. aktarma indirimi", short: "4. aktarma", icon: "↻↻↻", price: 15.62 },
-  { label: "5. aktarma indirimi", short: "5. aktarma", icon: "↻↻↻", price: 15.62 },
+  // Manuel aktarma kalemleri — dropdown'dan gizli, sadece eski data ile uyumluluk için tutuluyor.
+  { label: "1. aktarma indirimi", short: "1. aktarma", icon: "↻", price: 31.27, aktarma: true },
+  { label: "2. aktarma indirimi", short: "2. aktarma", icon: "↻↻", price: 24.02, aktarma: true },
+  { label: "3. aktarma indirimi", short: "3. aktarma", icon: "↻↻↻", price: 15.62, aktarma: true },
+  { label: "4. aktarma indirimi", short: "4. aktarma", icon: "↻↻↻", price: 15.62, aktarma: true },
+  { label: "5. aktarma indirimi", short: "5. aktarma", icon: "↻↻↻", price: 15.62, aktarma: true },
 ];
 
 const fmt = (n: number) =>
@@ -58,7 +93,310 @@ const defaultClient: Profile = {
 export default function UlasimHesaplayici() {
   const [profiles, setProfiles] = useState<Profile[]>([defaultStandard, defaultClient]);
   const [totalWorkdays, setTotalWorkdays] = useState(22);
+  const [senderName, setSenderName] = useState("");
+  const [companyName, setCompanyName] = useState("");
+  const now0 = new Date();
+  const [periodMonth, setPeriodMonth] = useState(now0.getMonth());
+  const [periodYear, setPeriodYear] = useState(now0.getFullYear());
   const [copied, setCopied] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+  const [tarifeOpen, setTarifeOpen] = useState(false);
+
+  // Auth & sync state
+  const [session, setSession] = useState<Session | null>(null);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authSending, setAuthSending] = useState(false);
+  const [authMsg, setAuthMsg] = useState<string | null>(null);
+  const [syncState, setSyncState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const shapeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const monthTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [monthLoading, setMonthLoading] = useState(false);
+
+  type HistoryRow = {
+    year: number;
+    month: number;
+    total_workdays: number;
+    profile_days: number[];
+    profiles: Profile[] | null;
+    monthly_total: number | null;
+    updated_at: string;
+  };
+  const [history, setHistory] = useState<HistoryRow[]>([]);
+
+  const fetchHistory = async (uid: string) => {
+    const { data } = await supabase
+      .from("monthly_entries")
+      .select("year, month, total_workdays, profile_days, profiles, monthly_total, updated_at")
+      .eq("user_id", uid)
+      .order("year", { ascending: false })
+      .order("month", { ascending: false });
+    if (data) setHistory(data as HistoryRow[]);
+  };
+
+  const [pendingCopy, setPendingCopy] = useState<string | null>(null);
+  const pendingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const toggleExpand = (pi: number) =>
+    setExpanded((s) => {
+      const n = new Set(s);
+      if (n.has(pi)) n.delete(pi);
+      else n.add(pi);
+      return n;
+    });
+  const [showHistory, setShowHistory] = useState(false);
+
+  const requestCopy = (h: HistoryRow) => {
+    const key = `${h.year}-${h.month}`;
+    if (pendingCopy === key) {
+      setTotalWorkdays(h.total_workdays);
+      if (h.profiles && h.profiles.length > 0) {
+        // New format — clone the full profile list (shapes + days) with fresh leg ids
+        const cloned = h.profiles.map((p) => ({
+          ...p,
+          going: p.going.map((l) => ({ ...l, id: uid++ })),
+          returning: p.returning.map((l) => ({ ...l, id: uid++ })),
+        }));
+        setProfiles(cloned);
+      } else {
+        // Legacy fallback — only days
+        setProfiles((prev) =>
+          prev.map((p, i) => ({ ...p, days: h.profile_days[i] ?? 0 })),
+        );
+      }
+      setPendingCopy(null);
+      if (pendingTimer.current) clearTimeout(pendingTimer.current);
+    } else {
+      setPendingCopy(key);
+      if (pendingTimer.current) clearTimeout(pendingTimer.current);
+      pendingTimer.current = setTimeout(() => setPendingCopy(null), 3000);
+    }
+  };
+
+  const deleteMonth = async (year: number, month: number) => {
+    if (!session) return;
+    if (!confirm(`${MONTHS_TR[month]} ${year} kaydını silmek istediğine emin misin?`)) return;
+    await supabase
+      .from("monthly_entries")
+      .delete()
+      .eq("user_id", session.user.id)
+      .eq("year", year)
+      .eq("month", month);
+    setHistory((h) => h.filter((r) => !(r.year === year && r.month === month)));
+  };
+
+  const shiftPeriod = (delta: number) => {
+    const d = new Date(periodYear, periodMonth + delta, 1);
+    setPeriodMonth(d.getMonth());
+    setPeriodYear(d.getFullYear());
+  };
+
+  // Save A — profile SHAPES + sender/company → user_data
+  useEffect(() => {
+    if (!hydrated || !session) return;
+    setSyncState("saving");
+    if (shapeTimer.current) clearTimeout(shapeTimer.current);
+    shapeTimer.current = setTimeout(async () => {
+      const shapes = profiles.map((p) => ({
+        name: p.name,
+        going: p.going,
+        returning: p.returning,
+      }));
+      const { error } = await supabase.from("user_data").upsert({
+        user_id: session.user.id,
+        data: { profiles: shapes, senderName, companyName },
+        updated_at: new Date().toISOString(),
+      });
+      setSyncState(error ? "error" : "saved");
+    }, 800);
+  }, [profiles, senderName, companyName, hydrated, session]);
+
+  // Save B — monthly entry (totalWorkdays + profile_days[] + snapshot total) → monthly_entries
+  useEffect(() => {
+    if (!hydrated || !session) return;
+    if (monthLoading) {
+      // A new month is being loaded: cancel any pending stale save
+      if (monthTimer.current) clearTimeout(monthTimer.current);
+      return;
+    }
+    const targetYear = periodYear;
+    const targetMonth = periodMonth;
+    setSyncState("saving");
+    if (monthTimer.current) clearTimeout(monthTimer.current);
+    monthTimer.current = setTimeout(async () => {
+      // Final guard: period must still match
+      if (targetYear !== periodYear || targetMonth !== periodMonth) return;
+
+      const profile_days = profiles.map((p) => Number(p.days) || 0);
+      const monthly_total = profiles.reduce(
+        (sum, p, i) =>
+          sum +
+          (legsTotal(p.going) + legsTotal(p.returning)) * (profile_days[i] || 0),
+        0,
+      );
+      const { error } = await supabase.from("monthly_entries").upsert({
+        user_id: session.user.id,
+        year: targetYear,
+        month: targetMonth,
+        total_workdays: totalWorkdays,
+        profile_days,
+        profiles, // full shape (name + legs + days) — per-month, independent
+        monthly_total,
+        updated_at: new Date().toISOString(),
+      });
+      setSyncState(error ? "error" : "saved");
+      if (!error) fetchHistory(session.user.id);
+    }, 800);
+  }, [profiles, totalWorkdays, periodMonth, periodYear, hydrated, session, monthLoading]);
+
+  // Subscribe to auth changes. Auto-open login if no session.
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      if (!data.session) {
+        setAuthOpen(true);
+        setHydrated(true); // ready to render defaults
+      }
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+      setSession(s);
+      if (s) setAuthOpen(false);
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  // When signed in, pull profile shapes + sender/company from user_data
+  useEffect(() => {
+    if (!session) return;
+    (async () => {
+      const { data, error } = await supabase
+        .from("user_data")
+        .select("data")
+        .eq("user_id", session.user.id)
+        .maybeSingle();
+      if (error) {
+        setSyncState("error");
+        setHydrated(true);
+        return;
+      }
+      if (data?.data) {
+        const cloud = data.data as Record<string, unknown>;
+        if (Array.isArray(cloud.profiles)) {
+          const shapes = cloud.profiles as Array<Omit<Profile, "id" | "days"> & { days?: number }>;
+          setProfiles(
+            shapes.map((s) => ({
+              name: s.name,
+              going: s.going,
+              returning: s.returning,
+              days: 0, // overwritten by monthly fetch
+            })),
+          );
+        }
+        if (typeof cloud.senderName === "string") setSenderName(cloud.senderName);
+        if (typeof cloud.companyName === "string") setCompanyName(cloud.companyName);
+        setSyncState("saved");
+      } else {
+        // First time: seed user_data with current shapes
+        await supabase.from("user_data").upsert({
+          user_id: session.user.id,
+          data: {
+            profiles: profiles.map((p) => ({
+              name: p.name,
+              going: p.going,
+              returning: p.returning,
+            })),
+            senderName,
+            companyName,
+          },
+        });
+        setSyncState("saved");
+      }
+      setHydrated(true);
+      fetchHistory(session.user.id);
+    })();
+  }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load monthly entry whenever session/period changes
+  useEffect(() => {
+    if (!session || !hydrated) return;
+    setMonthLoading(true);
+    (async () => {
+      const { data } = await supabase
+        .from("monthly_entries")
+        .select("total_workdays, profile_days, profiles")
+        .eq("user_id", session.user.id)
+        .eq("year", periodYear)
+        .eq("month", periodMonth)
+        .maybeSingle();
+
+      // Apply a row to local state. Prefer new-format profiles; fall back to
+      // overlaying days on currently loaded shapes (legacy rows).
+      const applyRow = (row: { total_workdays: number; profile_days: number[] | null; profiles: Profile[] | null }) => {
+        setTotalWorkdays(row.total_workdays);
+        const fullProfiles = Array.isArray(row.profiles) && row.profiles.length > 0 ? row.profiles : null;
+        if (fullProfiles) {
+          // Re-issue stable leg ids in case stored ids collide with uid counter
+          const reissued = fullProfiles.map((p) => ({
+            ...p,
+            going: p.going.map((l) => ({ ...l, id: uid++ })),
+            returning: p.returning.map((l) => ({ ...l, id: uid++ })),
+          }));
+          setProfiles(reissued);
+        } else if (row.profile_days) {
+          setProfiles((prev) => prev.map((p, i) => ({ ...p, days: row.profile_days![i] ?? 0 })));
+        }
+      };
+
+      if (data) {
+        applyRow(data as { total_workdays: number; profile_days: number[] | null; profiles: Profile[] | null });
+      } else {
+        // No entry for this period — carry forward latest prior month
+        const { data: prior } = await supabase
+          .from("monthly_entries")
+          .select("total_workdays, profile_days, profiles")
+          .eq("user_id", session.user.id)
+          .or(`year.lt.${periodYear},and(year.eq.${periodYear},month.lt.${periodMonth})`)
+          .order("year", { ascending: false })
+          .order("month", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (prior) {
+          applyRow(prior as { total_workdays: number; profile_days: number[] | null; profiles: Profile[] | null });
+        }
+      }
+      setMonthLoading(false);
+    })();
+  }, [session, hydrated, periodMonth, periodYear]);
+
+  const sendMagicLink = async () => {
+    if (!authEmail.trim()) return;
+    setAuthSending(true);
+    setAuthMsg(null);
+    const { error } = await supabase.auth.signInWithOtp({
+      email: authEmail.trim(),
+      options: { emailRedirectTo: typeof window !== "undefined" ? window.location.origin : undefined },
+    });
+    setAuthSending(false);
+    if (error) {
+      setAuthMsg(`Hata: ${error.message}`);
+    } else {
+      setAuthMsg("✓ E-postanı kontrol et — giriş linki gönderildi.");
+    }
+  };
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+    setSession(null);
+    // Reset to defaults — nothing persists locally
+    setProfiles([defaultStandard, defaultClient]);
+    setTotalWorkdays(22);
+    setSenderName("");
+    setCompanyName("");
+    const n = new Date();
+    setPeriodMonth(n.getMonth());
+    setPeriodYear(n.getFullYear());
+    setAuthOpen(true);
+  };
 
   const updateProfile = <K extends keyof Profile>(pi: number, key: K, val: Profile[K]) =>
     setProfiles((p) => p.map((x, i) => (i === pi ? { ...x, [key]: val } : x)));
@@ -94,7 +432,30 @@ export default function UlasimHesaplayici() {
 
   const removeProfile = (pi: number) => setProfiles((p) => p.filter((_, i) => i !== pi));
 
-  const legsTotal = (legs: Leg[]) => legs.reduce((s, l) => s + VEHICLES[l.vIdx].price, 0);
+  const duplicateProfile = (pi: number) => {
+    const src = profiles[pi];
+    const input = window.prompt(
+      `"${src.name}" kopyalanıyor.\n\nMüşteri adı (boş bırakırsan otomatik isim verilir):`,
+      "",
+    );
+    if (input === null) return; // user cancelled
+    const newName = input.trim() ? input.trim() : `${src.name} (kopya)`;
+    setProfiles((p) => {
+      const s = p[pi];
+      const clone: Profile = {
+        name: newName,
+        days: s.days,
+        going: s.going.map((l) => ({ ...l, id: uid++ })),
+        returning: s.returning.map((l) => ({ ...l, id: uid++ })),
+      };
+      const next = [...p];
+      next.splice(pi + 1, 0, clone);
+      return next;
+    });
+  };
+
+  const legsTotal = (legs: Leg[]) =>
+    computeLegPrices(legs).reduce((s, p) => s + p, 0);
   const profileDay = (p: Profile) => legsTotal(p.going) + legsTotal(p.returning);
   const profileMon = (p: Profile) => profileDay(p) * (Number(p.days) || 0);
   const grandTotal = profiles.reduce((s, p) => s + profileMon(p), 0);
@@ -102,17 +463,20 @@ export default function UlasimHesaplayici() {
 
   const reqText = () => {
     const today = new Date().toLocaleDateString("tr-TR");
+    const period = `${MONTHS_TR[periodMonth]} ${periodYear}`;
     const lines = profiles
       .map((p) => {
-        const legLines = (legs: Leg[]) =>
-          legs
-            .map((l) => {
+        const legLines = (legs: Leg[]) => {
+          const prices = computeLegPrices(legs);
+          return legs
+            .map((l, i) => {
               const vName = VEHICLES[l.vIdx].label;
               const hat = l.label ? ` (${l.label})` : "";
               const tag = l.isTransfer ? " [aktarma]" : "";
-              return `    • ${vName}${hat}${tag} — ${fmtTL(VEHICLES[l.vIdx].price)}`;
+              return `    • ${vName}${hat}${tag} — ${fmtTL(prices[i])}`;
             })
             .join("\n");
+        };
 
         return [
           `${p.name}`,
@@ -127,13 +491,20 @@ export default function UlasimHesaplayici() {
       })
       .join("\n\n");
 
+    const recipient = companyName.trim()
+      ? `${companyName.trim()} — İlgili Departmana,`
+      : `İlgili departmana,`;
+    const signature = senderName.trim()
+      ? `Saygılarımla,\n${senderName.trim()}`
+      : `Saygılarımla.`;
+
     return [
-      `Konu: Aylık ulaşım ücreti talebi`,
+      `Konu: ${period} dönemi ulaşım ücreti talebi`,
       `Tarih: ${today}`,
       ``,
-      `İlgili departmana,`,
+      recipient,
       ``,
-      `Aylık toplu taşıma ulaşım giderime ilişkin ücret talebimi bilgilerinize sunarım.`,
+      `${period} dönemine ait toplu taşıma ulaşım giderime ilişkin ücret talebimi bilgilerinize sunarım.`,
       ``,
       lines,
       ``,
@@ -141,7 +512,9 @@ export default function UlasimHesaplayici() {
       `Toplam çalışma günü : ${totalWorkdays} gün`,
       `Aylık genel toplam  : ${fmtTL(grandTotal)}`,
       ``,
-      `${fmtTL(grandTotal)} tutarının tarafıma ödenmesini saygılarımla talep ederim.`,
+      `${fmtTL(grandTotal)} tutarının tarafıma ödenmesini rica ederim.`,
+      ``,
+      signature,
       ``,
       `(Kaynak: İBB UKOME, 16 Şubat 2026 güncel tarifesi)`,
     ].join("\n");
@@ -154,324 +527,501 @@ export default function UlasimHesaplayici() {
     });
 
   return (
-    <main className="relative mx-auto min-h-dvh max-w-5xl px-4 pb-24 pt-8 sm:px-8 sm:pt-12">
-      {/* Top status bar */}
-      <div className="flex items-center justify-between text-[11px] font-medium tracking-wide text-[var(--color-fg-dim)]">
-        <div className="flex items-center gap-2">
-          <span className="live-dot" />
-          <span className="font-mono uppercase">canlı tarife</span>
-        </div>
-        <div className="chip">
-          <span>İBB UKOME</span>
-          <span className="text-[var(--color-fg)]">16.02.2026</span>
-        </div>
-      </div>
-
-      {/* Hero */}
-      <section className="relative mt-10 overflow-hidden rounded-[32px] border border-[var(--color-border)] bg-[var(--color-surface)] p-8 sm:p-12">
-        <div className="grid-bg pointer-events-none absolute inset-0" />
-        <div className="pointer-events-none absolute -right-32 -top-32 size-[420px] rounded-full bg-[var(--color-lime)] opacity-[0.07] blur-3xl" />
-        <div className="pointer-events-none absolute -bottom-40 -left-20 size-[380px] rounded-full bg-[var(--color-violet)] opacity-[0.10] blur-3xl" />
-
-        <div className="relative">
-          <div className="flex items-center gap-2">
-            <span className="chip">
-              <span className="size-1.5 rounded-full bg-[var(--color-lime)]" />
-              İstanbul · 2026
-            </span>
-            <span className="chip">{profiles.length} güzergah</span>
-          </div>
-
-          <h1 className="mt-6 text-[42px] font-medium leading-[1.05] tracking-tight sm:text-[64px]">
-            Ulaşım <span className="italic text-[var(--color-fg-muted)]">defteriniz</span>.
-            <br />
-            <span className="text-[var(--color-fg-muted)]">Aylık masraf, </span>
-            <span className="text-[var(--color-lime)]">tek tıkla</span>
-            <span className="text-[var(--color-fg-muted)]">.</span>
-          </h1>
-
-          <p className="mt-5 max-w-xl text-[15px] leading-relaxed text-[var(--color-fg-muted)]">
-            Her güzergahınızı ekleyin, günleri girin — biz aylık tutarı ve şirkete
-            göndereceğiniz talep metnini hazırlayalım.
+    <main className="mx-auto min-h-dvh max-w-2xl px-4 pb-24 pt-6 sm:px-6 sm:pt-10">
+      {/* Header */}
+      <header className="mb-8 flex flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--color-fg-dim)]">
+            İstanbul · 2026
           </p>
-
-          {/* Stat row */}
-          <div className="mt-10 grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <HeroStat label="Aylık toplam" value={fmtTL(grandTotal)} primary />
-            <HeroStat label="Çalışma günü" value={`${totalWorkdays}`} suffix="gün" />
-            <HeroStat label="Güzergah" value={`${profiles.length}`} />
-            <HeroStat
-              label="Günlük ortalama"
-              value={fmtTL(totalWorkdays > 0 ? grandTotal / totalWorkdays : 0)}
+          <h1 className="mt-1 font-display text-[28px] leading-none tracking-tight sm:text-[34px]">
+            Ulaşım <span className="italic text-[var(--color-lime)]">defteri</span>
+          </h1>
+        </div>
+        {session ? (
+          <button
+            onClick={signOut}
+            className="chip transition hover:border-[var(--color-border-strong)]"
+            title={`Çıkış · ${session.user.email}`}
+          >
+            <span
+              className={
+                "size-1.5 rounded-full " +
+                (syncState === "saving"
+                  ? "bg-[var(--color-sky)]"
+                  : syncState === "error"
+                  ? "bg-[var(--color-rose)]"
+                  : "bg-[var(--color-lime)]")
+              }
             />
+            <span>
+              {syncState === "saving"
+                ? "kaydediliyor"
+                : syncState === "error"
+                ? "hata"
+                : "senkron"}
+            </span>
+          </button>
+        ) : (
+          <button
+            onClick={() => setAuthOpen(true)}
+            className="chip transition hover:border-[var(--color-lime)]/40 hover:text-[var(--color-lime)]"
+          >
+            ↗ Giriş
+          </button>
+        )}
+      </header>
+
+      {/* Period + Total bar */}
+      <section className="relative overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 sm:p-5">
+        <div className="pointer-events-none absolute -right-20 -top-16 size-[240px] rounded-full bg-[var(--color-lime)] opacity-[0.06] blur-3xl" />
+        <div className="relative flex flex-wrap items-end justify-between gap-4">
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => shiftPeriod(-1)}
+              className="grid size-8 place-items-center rounded-lg text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-fg)]"
+              aria-label="Önceki ay"
+            >
+              ‹
+            </button>
+            <div className="min-w-[110px] px-1 text-center">
+              <p className="font-display text-[20px] italic leading-none tracking-tight">
+                {MONTHS_TR[periodMonth]}
+              </p>
+              <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.25em] text-[var(--color-fg-dim)]">
+                {periodYear} dönemi
+              </p>
+            </div>
+            <button
+              onClick={() => shiftPeriod(1)}
+              className="grid size-8 place-items-center rounded-lg text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-fg)]"
+              aria-label="Sonraki ay"
+            >
+              ›
+            </button>
+          </div>
+          <div className="text-right">
+            <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-[var(--color-fg-dim)]">
+              Aylık toplam
+            </p>
+            <p className="mt-1 font-display text-[40px] leading-none tracking-tight text-[var(--color-lime)] tabular-nums sm:text-[48px]">
+              {fmt(grandTotal)}
+              <span className="ml-1 align-top text-lg font-normal text-[var(--color-fg-muted)]">₺</span>
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--color-border)] pt-3">
+          <div className="flex items-center gap-2 text-[13px] text-[var(--color-fg-muted)]">
+            <span>Çalışma günü</span>
+            {assignedDays !== totalWorkdays && (
+              <span className="font-mono text-[10px] text-[var(--color-rose)]">
+                ⚠ atanan {assignedDays}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-2)] p-0.5">
+            <button
+              onClick={() => setTotalWorkdays((d) => Math.max(1, d - 1))}
+              className="grid size-7 place-items-center rounded-md text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-fg)]"
+            >
+              −
+            </button>
+            <input
+              type="number"
+              min={1}
+              max={31}
+              value={totalWorkdays}
+              onChange={(e) => setTotalWorkdays(Number(e.target.value) || 1)}
+              className="w-10 bg-transparent text-center text-sm font-medium tabular-nums outline-none"
+            />
+            <button
+              onClick={() => setTotalWorkdays((d) => Math.min(31, d + 1))}
+              className="grid size-7 place-items-center rounded-md text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-fg)]"
+            >
+              +
+            </button>
           </div>
         </div>
       </section>
 
-      {/* Fare marquee */}
-      <div className="relative mt-6 overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-2)]">
-        <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-16 bg-gradient-to-r from-[var(--color-bg-2)] to-transparent" />
-        <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-16 bg-gradient-to-l from-[var(--color-bg-2)] to-transparent" />
-        <div className="marquee-track flex whitespace-nowrap py-3 font-mono text-[12px] text-[var(--color-fg-muted)]">
-          {[...VEHICLES, ...VEHICLES, ...VEHICLES].map((v, i) => (
-            <span key={i} className="inline-flex items-center gap-2 px-6">
-              <span className="text-[var(--color-lime)]">{v.icon}</span>
-              <span>{v.short}</span>
-              <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[var(--color-fg)]">
-                {fmtTL(v.price)}
+      {/* History — collapsible compact (active month hariç) */}
+      {session && (() => {
+        const pastMonths = history.filter(
+          (h) => !(h.year === periodYear && h.month === periodMonth),
+        );
+        if (pastMonths.length === 0) return null;
+        return (
+        <section className="mt-3">
+          <button
+            onClick={() => setShowHistory((s) => !s)}
+            className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-[13px] text-[var(--color-fg-muted)] transition hover:bg-white/5"
+          >
+            <span className="inline-flex items-center gap-2">
+              <span>{showHistory ? "▾" : "▸"}</span>
+              <span>Geçmiş aylar</span>
+              <span className="font-mono text-[10px] text-[var(--color-fg-dim)]">
+                · {pastMonths.length}
               </span>
             </span>
-          ))}
-        </div>
-      </div>
+            <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--color-fg-dim)]">
+              {showHistory ? "kapat" : "göster"}
+            </span>
+          </button>
 
-      {/* Workdays */}
-      <section className="rise mt-8 flex flex-wrap items-end justify-between gap-6 rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface)] p-6 sm:p-8">
-        <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-[var(--color-fg-dim)]">
-            01 · Çalışma günü
-          </p>
-          <h2 className="mt-2 text-2xl font-medium tracking-tight">
-            Bu ay <span className="text-[var(--color-fg-muted)]">kaç gün</span> yola çıkıyorsunuz?
-          </h2>
-          {assignedDays !== totalWorkdays && (
-            <p className="mt-2 inline-flex items-center gap-2 rounded-full bg-[var(--color-rose)]/10 px-3 py-1 text-[11px] text-[var(--color-rose)]">
-              <span className="size-1.5 rounded-full bg-[var(--color-rose)]" />
-              Profillere atanan: {assignedDays} gün
-            </p>
+          {showHistory && (
+            <ul className="mt-2 space-y-1.5">
+              {pastMonths.map((h) => {
+                const isActive = false; // active month is filtered out above
+                const monthTotal =
+                  h.monthly_total != null
+                    ? Number(h.monthly_total)
+                    : (h.profiles ?? []).reduce(
+                        (sum, p) =>
+                          sum +
+                          (legsTotal(p.going) + legsTotal(p.returning)) *
+                            (Number(p.days) || 0),
+                        0,
+                      ) ||
+                      h.profile_days.reduce((sum, d, i) => {
+                        const p = profiles[i];
+                        if (!p) return sum;
+                        const day = legsTotal(p.going) + legsTotal(p.returning);
+                        return sum + day * (d || 0);
+                      }, 0);
+                const pending = pendingCopy === `${h.year}-${h.month}`;
+                return (
+                  <li
+                    key={`${h.year}-${h.month}`}
+                    className={
+                      "group/h flex items-center gap-2 rounded-lg border px-3 py-2 text-[13px] transition " +
+                      (isActive
+                        ? "border-[var(--color-lime)]/40 bg-[var(--color-lime-soft)]"
+                        : "border-[var(--color-border)] bg-[var(--color-bg-2)]/40 hover:border-[var(--color-border-strong)]")
+                    }
+                  >
+                    <button
+                      onClick={() => {
+                        setPeriodMonth(h.month);
+                        setPeriodYear(h.year);
+                      }}
+                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                    >
+                      <span
+                        className={
+                          "w-12 shrink-0 font-mono text-[10px] uppercase tracking-wider " +
+                          (isActive ? "text-[var(--color-lime)]" : "text-[var(--color-fg-muted)]")
+                        }
+                      >
+                        {MONTHS_TR[h.month].slice(0, 3)} {String(h.year).slice(2)}
+                      </span>
+                      <span className="flex-1 font-mono text-[11px] text-[var(--color-fg-dim)]">
+                        {h.total_workdays} gün
+                      </span>
+                      <span className="font-mono text-[13px] tabular-nums text-[var(--color-fg)]">
+                        {fmtTL(monthTotal)}
+                      </span>
+                    </button>
+                    <div className="flex items-center gap-1">
+                      {!isActive && (
+                        <button
+                          onClick={() => requestCopy(h)}
+                          className={
+                            "rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.15em] transition " +
+                            (pending
+                              ? "bg-[var(--color-lime)] text-[#0a0a0c]"
+                              : "text-[var(--color-fg-muted)] hover:bg-white/10 hover:text-[var(--color-lime)]")
+                          }
+                          title={`${MONTHS_TR[h.month]} ${h.year}'ı şu anki aya kopyala`}
+                        >
+                          {pending ? "onayla" : "kopyala"}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => deleteMonth(h.year, h.month)}
+                        className="grid size-6 place-items-center rounded text-[var(--color-fg-muted)] transition hover:bg-[var(--color-rose)]/10 hover:text-[var(--color-rose)]"
+                        aria-label="Sil"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
           )}
-        </div>
+        </section>
+        );
+      })()}
 
-        <div className="flex items-end gap-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-2)] p-2 pr-5">
-          <button
-            onClick={() => setTotalWorkdays((d) => Math.max(1, d - 1))}
-            className="size-11 rounded-xl bg-white/5 text-xl text-[var(--color-fg-muted)] transition hover:bg-white/10 hover:text-[var(--color-fg)]"
-          >
-            −
-          </button>
-          <input
-            type="number"
-            min={1}
-            max={31}
-            value={totalWorkdays}
-            onChange={(e) => setTotalWorkdays(Number(e.target.value) || 1)}
-            className="w-20 bg-transparent text-center text-5xl font-medium tabular-nums tracking-tight outline-none"
-          />
-          <button
-            onClick={() => setTotalWorkdays((d) => Math.min(31, d + 1))}
-            className="size-11 rounded-xl bg-white/5 text-xl text-[var(--color-fg-muted)] transition hover:bg-white/10 hover:text-[var(--color-fg)]"
-          >
-            +
-          </button>
-          <span className="pb-2 font-mono text-[10px] uppercase tracking-[0.25em] text-[var(--color-fg-dim)]">
-            gün
+      {/* Profiles */}
+      <section className="mt-6">
+        <div className="mb-3 flex items-baseline justify-between px-1">
+          <h2 className="font-display text-xl italic tracking-tight text-[var(--color-fg)]">
+            Güzergahlar
+          </h2>
+          <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
+            {profiles.length} adet
           </span>
         </div>
+        <ul className="space-y-2">
+          {profiles.map((p, pi) => (
+            <ProfileRow
+              key={pi}
+              p={p}
+              pi={pi}
+              isOpen={expanded.has(pi)}
+              canRemove={profiles.length > 1}
+              dayCost={legsTotal(p.going) + legsTotal(p.returning)}
+              monthCost={profileMon(p)}
+              legsTotalGoing={legsTotal(p.going)}
+              legsTotalReturning={legsTotal(p.returning)}
+              onToggle={() => toggleExpand(pi)}
+              updateProfile={updateProfile}
+              updateLeg={updateLeg}
+              addLeg={addLeg}
+              removeLeg={removeLeg}
+              removeProfile={removeProfile}
+              duplicateProfile={duplicateProfile}
+            />
+          ))}
+        </ul>
+        <button
+          onClick={addProfile}
+          className="mt-2 w-full rounded-lg border border-dashed border-[var(--color-border)] py-2.5 text-[13px] text-[var(--color-fg-muted)] transition hover:border-[var(--color-lime)]/40 hover:bg-[var(--color-lime-soft)] hover:text-[var(--color-lime)]"
+        >
+          + Güzergah ekle
+        </button>
       </section>
 
-      {/* Profile cards */}
-      <div className="mt-8 space-y-6">
-        {profiles.map((p, pi) => (
-          <ProfileCard
-            key={pi}
-            p={p}
-            pi={pi}
-            canRemove={profiles.length > 1}
-            profileDay={profileDay(p)}
-            profileMon={profileMon(p)}
-            legsTotalGoing={legsTotal(p.going)}
-            legsTotalReturning={legsTotal(p.returning)}
-            updateProfile={updateProfile}
-            updateLeg={updateLeg}
-            addLeg={addLeg}
-            removeLeg={removeLeg}
-            removeProfile={removeProfile}
+      {/* Sender / Company — compact */}
+      <section className="mt-8 grid gap-3 sm:grid-cols-2">
+        <label className="group/in relative block">
+          <span className="pointer-events-none absolute left-4 top-1.5 font-mono text-[9px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
+            Adınız
+          </span>
+          <input
+            value={senderName}
+            onChange={(e) => setSenderName(e.target.value)}
+            placeholder="Ad Soyad"
+            className="peer w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 pb-2.5 pt-5 text-[14px] outline-none transition placeholder:text-[var(--color-fg-dim)]/60 hover:border-[var(--color-border-strong)] focus:border-[var(--color-lime)]/50 focus:ring-2 focus:ring-[var(--color-lime)]/15"
           />
-        ))}
-      </div>
-
-      {/* Add profile */}
-      <button
-        onClick={addProfile}
-        className="group mt-6 w-full rounded-3xl border border-dashed border-white/15 bg-transparent py-6 text-[var(--color-fg-muted)] transition hover:border-[var(--color-lime)] hover:bg-[var(--color-lime-soft)] hover:text-[var(--color-lime)]"
-      >
-        <span className="inline-flex items-center gap-3 text-base font-medium">
-          <span className="grid size-7 place-items-center rounded-full border border-current">+</span>
-          Yeni güzergah ekle
-        </span>
-      </button>
-
-      {/* Grand total */}
-      <section className="relative mt-10 overflow-hidden rounded-[32px] border border-[var(--color-border)] bg-gradient-to-br from-[#16161a] via-[#16161a] to-[#1f1f24] p-8 sm:p-12">
-        <div className="pointer-events-none absolute -right-24 -top-24 size-[400px] rounded-full bg-[var(--color-lime)] opacity-[0.10] blur-3xl" />
-        <div className="pointer-events-none absolute -bottom-32 left-1/3 size-[300px] rounded-full bg-[var(--color-violet)] opacity-[0.10] blur-3xl" />
-
-        <div className="relative flex flex-col gap-8 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <span className="chip">
-              <span className="live-dot" />
-              Aylık genel toplam
-            </span>
-            <div className="mt-5 flex items-start gap-2 leading-none">
-              <span className="text-[64px] font-medium tabular-nums tracking-tight text-[var(--color-lime)] sm:text-[88px]">
-                {fmt(grandTotal)}
-              </span>
-              <span className="mt-3 text-3xl font-medium text-[var(--color-fg-muted)] sm:text-4xl">₺</span>
-            </div>
-            <div className="mt-6 flex flex-wrap gap-2">
-              {profiles.map((p, i) => (
-                <span
-                  key={i}
-                  className="inline-flex items-center gap-2 rounded-full border border-[var(--color-border)] bg-white/[0.03] px-3 py-1.5 text-[12px]"
-                >
-                  <span className="text-[var(--color-fg-muted)]">{p.name}</span>
-                  <span className="font-mono tabular-nums text-[var(--color-fg)]">
-                    {fmtTL(profileMon(p))}
-                  </span>
-                </span>
-              ))}
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-2 text-right font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
-            <span>Tahakkuk</span>
-            <span className="text-[var(--color-fg)]">
-              {new Date().toLocaleDateString("tr-TR")}
-            </span>
-          </div>
-        </div>
+        </label>
+        <label className="group/in relative block">
+          <span className="pointer-events-none absolute left-4 top-1.5 font-mono text-[9px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
+            Şirket
+          </span>
+          <input
+            value={companyName}
+            onChange={(e) => setCompanyName(e.target.value)}
+            placeholder="Şirket adı"
+            className="peer w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 pb-2.5 pt-5 text-[14px] outline-none transition placeholder:text-[var(--color-fg-dim)]/60 hover:border-[var(--color-border-strong)] focus:border-[var(--color-lime)]/50 focus:ring-2 focus:ring-[var(--color-lime)]/15"
+          />
+        </label>
       </section>
 
       {/* Request letter */}
-      <section className="mt-10">
-        <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-[var(--color-fg-dim)]">
-              02 · Talep metni
-            </p>
-            <h2 className="mt-2 text-2xl font-medium tracking-tight">
-              Şirkete gönderilecek <span className="text-[var(--color-fg-muted)]">e-posta</span>
-            </h2>
-          </div>
-          <button
-            onClick={copyText}
-            className={
-              "group inline-flex items-center gap-2 rounded-full px-5 py-3 text-sm font-medium transition " +
-              (copied
-                ? "bg-[var(--color-lime)] text-[#0a0a0c] glow-lime"
-                : "bg-[var(--color-fg)] text-[#0a0a0c] hover:bg-[var(--color-lime)] hover:glow-lime")
-            }
-          >
-            {copied ? (
-              <>
-                <span>✓</span>
-                <span>Kopyalandı</span>
-              </>
-            ) : (
-              <>
-                <CopyIcon />
-                <span>Metni kopyala</span>
-              </>
-            )}
-          </button>
-        </div>
-
-        <div className="relative overflow-hidden rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface)]">
-          <div className="flex items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-bg-2)] px-5 py-3">
-            <div className="flex items-center gap-1.5">
-              <span className="size-2.5 rounded-full bg-[var(--color-rose)]" />
-              <span className="size-2.5 rounded-full bg-[#fbbf24]" />
-              <span className="size-2.5 rounded-full bg-[var(--color-lime)]" />
-            </div>
-            <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-[var(--color-fg-dim)]">
-              talep.txt
+      <section className="mt-4">
+        <details className="group rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]">
+          <summary className="flex cursor-pointer items-center justify-between px-4 py-3 text-[13px] font-medium [&::-webkit-details-marker]:hidden">
+            <span className="inline-flex items-center gap-2">
+              <span className="text-[var(--color-fg-muted)] transition group-open:rotate-90">▸</span>
+              Talep metnini gör & kopyala
             </span>
-            <span className="font-mono text-[10px] text-[var(--color-fg-dim)]">
-              {reqText().split("\n").length} satır
-            </span>
-          </div>
+            <button
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                copyText();
+              }}
+              className={
+                "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[12px] font-medium transition " +
+                (copied
+                  ? "bg-[var(--color-lime)] text-[#0a0a0c]"
+                  : "bg-[var(--color-fg)] text-[#0a0a0c] hover:bg-[var(--color-lime)]")
+              }
+            >
+              {copied ? "✓ kopyalandı" : "kopyala"}
+            </button>
+          </summary>
           <textarea
             readOnly
             value={reqText()}
-            rows={18}
-            className="block w-full resize-y bg-transparent p-6 font-mono text-[12px] leading-[1.85] text-[var(--color-fg)] outline-none"
+            rows={14}
+            className="block w-full resize-y border-t border-[var(--color-border)] bg-[var(--color-bg-2)] p-4 font-mono text-[12px] leading-[1.8] text-[var(--color-fg)] outline-none"
           />
-        </div>
+        </details>
       </section>
 
-      <footer className="mt-16 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--color-border)] pt-6 text-[11px] text-[var(--color-fg-dim)]">
-        <span className="font-mono uppercase tracking-[0.2em]">
-          Kaynak · İBB UKOME 16.02.2026
-        </span>
-        <span>Ulaşım Defteri — 2026</span>
+      <footer className="mt-12 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--color-border)] pt-5 text-[11px] text-[var(--color-fg-dim)]">
+        <button
+          onClick={() => setTarifeOpen(true)}
+          className="inline-flex items-center gap-2 font-mono uppercase tracking-[0.18em] transition hover:text-[var(--color-lime)]"
+        >
+          <span>ⓘ</span>
+          Tarife · İBB UKOME 16.02.2026
+        </button>
+        <span className="font-display italic text-[var(--color-fg-muted)]">fin.</span>
       </footer>
+
+      {authOpen && !session && (
+        <div
+          onClick={() => setAuthOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative w-full max-w-md overflow-hidden rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface)] p-8 shadow-2xl"
+          >
+            <div className="pointer-events-none absolute -right-24 -top-24 size-[320px] rounded-full bg-[var(--color-lime)] opacity-[0.10] blur-3xl" />
+            <div className="pointer-events-none absolute -bottom-24 -left-24 size-[260px] rounded-full bg-[var(--color-violet)] opacity-[0.12] blur-3xl" />
+
+            <button
+              onClick={() => setAuthOpen(false)}
+              className="absolute right-4 top-4 grid size-8 place-items-center rounded-full text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-fg)]"
+              aria-label="Kapat"
+            >
+              ✕
+            </button>
+
+            <div className="relative">
+              <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--color-fg-dim)]">
+                Bulut senkron
+              </p>
+              <h3 className="mt-2 font-display text-[36px] leading-none tracking-tight">
+                E-posta ile{" "}
+                <span className="italic text-[var(--color-lime)]">giriş</span>
+              </h3>
+              <p className="mt-4 text-[13.5px] leading-relaxed text-[var(--color-fg-muted)]">
+                E-postanı yaz, sihirli giriş linki gönderelim. Şifre yok.
+                Verilerin bulutta sadece sana ait alanda tutulur.
+              </p>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  sendMagicLink();
+                }}
+                className="mt-6 space-y-3"
+              >
+                <label className="relative block">
+                  <span className="pointer-events-none absolute left-4 top-1.5 font-mono text-[9px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
+                    E-posta
+                  </span>
+                  <input
+                    type="email"
+                    required
+                    autoFocus
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    placeholder="ornek@mail.com"
+                    className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-2)] px-4 pb-3 pt-6 text-[14px] outline-none transition placeholder:text-[var(--color-fg-dim)]/60 hover:border-[var(--color-border-strong)] focus:border-[var(--color-lime)]/50 focus:ring-2 focus:ring-[var(--color-lime)]/15"
+                  />
+                </label>
+                <button
+                  type="submit"
+                  disabled={authSending}
+                  className="group/btn relative w-full overflow-hidden rounded-xl bg-[var(--color-lime)] py-3.5 text-[14px] font-medium text-[#0a0a0c] shadow-[0_0_0_1px_rgba(214,255,61,0.25),0_10px_40px_-10px_rgba(214,255,61,0.4)] transition hover:shadow-[0_0_0_1px_rgba(214,255,61,0.45),0_10px_50px_-8px_rgba(214,255,61,0.55)] disabled:opacity-50"
+                >
+                  <span className="relative inline-flex items-center gap-2">
+                    {authSending ? "Gönderiliyor…" : "Giriş linki gönder"}
+                    {!authSending && <span>→</span>}
+                  </span>
+                </button>
+              </form>
+
+              {authMsg && (
+                <p
+                  className={
+                    "mt-4 rounded-xl border p-3 text-[12.5px] " +
+                    (authMsg.startsWith("✓")
+                      ? "border-[var(--color-lime)]/30 bg-[var(--color-lime-soft)] text-[var(--color-lime)]"
+                      : "border-[var(--color-rose)]/30 bg-[var(--color-rose)]/10 text-[var(--color-rose)]")
+                  }
+                >
+                  {authMsg}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tarifeOpen && (
+        <div
+          onClick={() => setTarifeOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-2xl"
+          >
+            <header className="flex items-center justify-between gap-3 border-b border-[var(--color-border)] bg-[var(--color-bg-2)] px-5 py-3">
+              <div className="min-w-0">
+                <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-[var(--color-fg-dim)]">
+                  Kaynak görsel
+                </p>
+                <h3 className="mt-0.5 truncate font-display text-[18px] italic tracking-tight">
+                  İBB UKOME · <span className="text-[var(--color-lime)]">16.02.2026</span>
+                </h3>
+              </div>
+              <button
+                onClick={() => setTarifeOpen(false)}
+                className="grid size-9 shrink-0 place-items-center rounded-full text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-fg)]"
+                aria-label="Kapat"
+              >
+                ✕
+              </button>
+            </header>
+            <div className="overflow-auto p-3">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/IETT Ulaşım Ücret Tarifesi.jpeg"
+                alt="İBB UKOME 16.02.2026 ulaşım ücret tarifesi"
+                className="block h-auto w-full rounded-xl"
+              />
+              <p className="mt-3 text-center font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
+                12.02.2026 · 263 sayılı meclis kararı
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
 
-/* ───────────────────────── Hero stat ───────────────────────── */
-function HeroStat({
-  label,
-  value,
-  suffix,
-  primary,
-}: {
-  label: string;
-  value: string;
-  suffix?: string;
-  primary?: boolean;
-}) {
-  return (
-    <div
-      className={
-        "rounded-2xl border p-4 " +
-        (primary
-          ? "border-[var(--color-lime)]/30 bg-[var(--color-lime-soft)]"
-          : "border-[var(--color-border)] bg-white/[0.02]")
-      }
-    >
-      <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
-        {label}
-      </p>
-      <p
-        className={
-          "mt-2 text-2xl font-medium tabular-nums tracking-tight sm:text-[28px] " +
-          (primary ? "text-[var(--color-lime)]" : "text-[var(--color-fg)]")
-        }
-      >
-        {value}
-        {suffix && (
-          <span className="ml-1 text-sm font-normal text-[var(--color-fg-muted)]">
-            {suffix}
-          </span>
-        )}
-      </p>
-    </div>
-  );
-}
-
-/* ───────────────────────── Profile card ───────────────────────── */
-function ProfileCard({
+/* ───────────────────────── Profile row (collapsed by default) ───────────────────────── */
+function ProfileRow({
   p,
   pi,
+  isOpen,
   canRemove,
-  profileDay,
-  profileMon,
+  dayCost,
+  monthCost,
   legsTotalGoing,
   legsTotalReturning,
+  onToggle,
   updateProfile,
   updateLeg,
   addLeg,
   removeLeg,
   removeProfile,
+  duplicateProfile,
 }: {
   p: Profile;
   pi: number;
+  isOpen: boolean;
   canRemove: boolean;
-  profileDay: number;
-  profileMon: number;
+  dayCost: number;
+  monthCost: number;
   legsTotalGoing: number;
   legsTotalReturning: number;
+  onToggle: () => void;
   updateProfile: <K extends keyof Profile>(pi: number, key: K, val: Profile[K]) => void;
   updateLeg: <K extends keyof Leg>(
     pi: number,
@@ -483,125 +1033,123 @@ function ProfileCard({
   addLeg: (pi: number, dir: "going" | "returning") => void;
   removeLeg: (pi: number, dir: "going" | "returning", id: number) => void;
   removeProfile: (pi: number) => void;
+  duplicateProfile: (pi: number) => void;
 }) {
-  const accents = ["var(--color-lime)", "var(--color-sky)", "var(--color-violet)", "var(--color-rose)"];
+  const accents = [
+    "var(--color-lime)",
+    "var(--color-sky)",
+    "var(--color-violet)",
+    "var(--color-rose)",
+  ];
   const accent = accents[pi % accents.length];
 
   return (
-    <article className="group/card relative overflow-hidden rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface)] transition hover:border-[var(--color-border-strong)]">
-      <div
-        className="absolute inset-x-0 top-0 h-px"
-        style={{ background: `linear-gradient(90deg, transparent, ${accent}, transparent)` }}
-      />
+    <li
+      className="group/row relative rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] transition hover:border-[var(--color-border-strong)]"
+      style={{ borderLeftWidth: "3px", borderLeftColor: `color-mix(in srgb, ${accent} 55%, transparent)` }}
+    >
+      {/* Compact header row */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 px-3 py-2.5">
+        <button
+          onClick={onToggle}
+          className="grid size-7 shrink-0 place-items-center rounded-md text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-fg)]"
+          aria-label={isOpen ? "Daralt" : "Genişlet"}
+        >
+          <span className={"transition " + (isOpen ? "rotate-90" : "")}>▸</span>
+        </button>
 
-      <header className="flex flex-wrap items-center justify-between gap-4 px-6 pb-4 pt-6 sm:px-8">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          <span
-            className="grid size-10 shrink-0 place-items-center rounded-xl font-mono text-[11px] font-medium tabular-nums"
-            style={{
-              background: `color-mix(in srgb, ${accent} 14%, transparent)`,
-              color: accent,
-              border: `1px solid color-mix(in srgb, ${accent} 25%, transparent)`,
-            }}
+        <input
+          value={p.name}
+          onChange={(e) => updateProfile(pi, "name", e.target.value)}
+          className="min-w-0 flex-1 basis-[140px] bg-transparent text-[15px] font-medium outline-none placeholder:text-[var(--color-fg-dim)]"
+          placeholder="Güzergah adı"
+        />
+        <button
+          onClick={() => {
+            const next = window.prompt("Güzergah adını düzenle:", p.name);
+            if (next !== null && next.trim()) updateProfile(pi, "name", next.trim());
+          }}
+          className="hidden size-7 shrink-0 place-items-center rounded-md text-[var(--color-fg-dim)] transition hover:bg-white/5 hover:text-[var(--color-fg-muted)] sm:grid"
+          title="Adı düzenle"
+          aria-label="Adı düzenle"
+        >
+          ✎
+        </button>
+
+        {/* Right cluster — wraps below name on narrow screens */}
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+        <div className="flex items-center rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)]">
+          <button
+            onClick={() => updateProfile(pi, "days", Math.max(0, Number(p.days) - 1))}
+            className="grid size-7 place-items-center text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
+            aria-label="Azalt"
           >
-            {String(pi + 1).padStart(2, "0")}
-          </span>
+            −
+          </button>
           <input
-            value={p.name}
-            onChange={(e) => updateProfile(pi, "name", e.target.value)}
-            className="min-w-0 flex-1 bg-transparent text-xl font-medium tracking-tight outline-none placeholder:text-[var(--color-fg-dim)] focus:text-[var(--color-fg)]"
-            placeholder="Güzergah adı"
+            type="number"
+            min={0}
+            max={31}
+            value={p.days}
+            onChange={(e) => updateProfile(pi, "days", Number(e.target.value) || 0)}
+            className="w-9 bg-transparent text-center text-[13px] font-medium tabular-nums outline-none"
           />
+          <button
+            onClick={() => updateProfile(pi, "days", Math.min(31, Number(p.days) + 1))}
+            className="grid size-7 place-items-center text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
+            aria-label="Arttır"
+          >
+            +
+          </button>
         </div>
 
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-2)] p-1">
-            <button
-              onClick={() =>
-                updateProfile(pi, "days", Math.max(0, Number(p.days) - 1))
-              }
-              className="size-8 rounded-lg text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-fg)]"
-            >
-              −
-            </button>
-            <input
-              type="number"
-              min={0}
-              max={31}
-              value={p.days}
-              onChange={(e) =>
-                updateProfile(pi, "days", Number(e.target.value) || 0)
-              }
-              className="w-10 bg-transparent text-center text-base font-medium tabular-nums outline-none"
-            />
-            <button
-              onClick={() =>
-                updateProfile(pi, "days", Math.min(31, Number(p.days) + 1))
-              }
-              className="size-8 rounded-lg text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-fg)]"
-            >
-              +
-            </button>
-            <span className="px-1.5 font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
-              gün
-            </span>
-          </div>
+        <span className="hidden w-20 text-right font-mono text-[12px] tabular-nums text-[var(--color-fg-dim)] sm:inline">
+          {fmtTL(dayCost)}/g
+        </span>
+
+        <span className="w-20 text-right font-mono text-[13px] font-medium tabular-nums text-[var(--color-fg)] sm:w-24">
+          {fmtTL(monthCost)}
+        </span>
+
+        <div className="flex items-center gap-0.5">
+          <button
+            onClick={() => duplicateProfile(pi)}
+            className="inline-flex h-7 items-center rounded-md px-2 font-mono text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-lime)]"
+            title="Bu güzergahı kopyala"
+          >
+            kopyala
+          </button>
           {canRemove && (
             <button
               onClick={() => removeProfile(pi)}
-              className="size-10 rounded-xl border border-[var(--color-border)] bg-transparent text-[var(--color-fg-muted)] transition hover:border-[var(--color-rose)]/40 hover:bg-[var(--color-rose)]/10 hover:text-[var(--color-rose)]"
-              title="Güzergahı sil"
+              className="grid size-7 place-items-center rounded-md text-[var(--color-fg-muted)] transition hover:bg-[var(--color-rose)]/10 hover:text-[var(--color-rose)]"
+              title="Sil"
+              aria-label="Sil"
             >
               ✕
             </button>
           )}
         </div>
-      </header>
-
-      <div className="mx-6 mb-4 grid grid-cols-3 gap-px overflow-hidden rounded-2xl bg-[var(--color-border)] sm:mx-8">
-        <Cell label="Günlük" value={fmtTL(profileDay)} />
-        <Cell label="Çarpan" value={`× ${p.days}`} />
-        <Cell label="Aylık" value={fmtTL(profileMon)} accentColor={accent} />
+        </div>
       </div>
 
-      <div className="space-y-5 px-6 pb-6 sm:px-8 sm:pb-8">
-        {(["going", "returning"] as const).map((dir) => (
-          <TripBlock
-            key={dir}
-            dir={dir}
-            legs={p[dir]}
-            total={dir === "going" ? legsTotalGoing : legsTotalReturning}
-            onAdd={() => addLeg(pi, dir)}
-            onRemove={(id) => removeLeg(pi, dir, id)}
-            onUpdate={(id, key, val) => updateLeg(pi, dir, id, key, val)}
-          />
-        ))}
-      </div>
-    </article>
-  );
-}
-
-function Cell({
-  label,
-  value,
-  accentColor,
-}: {
-  label: string;
-  value: string;
-  accentColor?: string;
-}) {
-  return (
-    <div className="bg-[var(--color-surface-2)] px-5 py-4">
-      <p className="font-mono text-[9.5px] uppercase tracking-[0.25em] text-[var(--color-fg-dim)]">
-        {label}
-      </p>
-      <p
-        className="mt-1.5 text-lg font-medium tabular-nums tracking-tight sm:text-xl"
-        style={accentColor ? { color: accentColor } : undefined}
-      >
-        {value}
-      </p>
-    </div>
+      {/* Expanded — leg editor */}
+      {isOpen && (
+        <div className="space-y-3 border-t border-[var(--color-border)] bg-[var(--color-bg-2)]/40 px-3 py-3">
+          {(["going", "returning"] as const).map((dir) => (
+            <TripBlock
+              key={dir}
+              dir={dir}
+              legs={p[dir]}
+              total={dir === "going" ? legsTotalGoing : legsTotalReturning}
+              onAdd={() => addLeg(pi, dir)}
+              onRemove={(id) => removeLeg(pi, dir, id)}
+              onUpdate={(id, key, val) => updateLeg(pi, dir, id, key, val)}
+            />
+          ))}
+        </div>
+      )}
+    </li>
   );
 }
 
@@ -639,7 +1187,7 @@ function TripBlock({
             {dir === "going" ? "Gidiş" : "Dönüş"}
           </span>
           <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
-            {legs.length} bacak
+            {legs.length} araç
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -650,44 +1198,39 @@ function TripBlock({
             onClick={onAdd}
             className="rounded-full border border-[var(--color-border)] bg-white/[0.03] px-3 py-1 font-mono text-[11px] text-[var(--color-fg-muted)] transition hover:border-[var(--color-lime)]/40 hover:bg-[var(--color-lime-soft)] hover:text-[var(--color-lime)]"
           >
-            + bacak
+            + araç
           </button>
         </div>
       </header>
 
       <ol className="space-y-2">
-        {legs.map((leg, idx) => (
+        {(() => {
+          const prices = computeLegPrices(legs);
+          return legs.map((leg, idx) => (
           <li
             key={leg.id}
-            className="group/leg grid grid-cols-[28px_1fr_auto] items-center gap-3 rounded-xl border border-transparent bg-white/[0.02] p-2 transition hover:border-[var(--color-border)] sm:grid-cols-[28px_minmax(0,1.6fr)_minmax(0,1fr)_auto_auto_auto]"
+            className="group/leg flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-transparent bg-white/[0.02] p-2 transition hover:border-[var(--color-border)] sm:grid sm:grid-cols-[24px_minmax(0,2.4fr)_minmax(0,0.9fr)_auto_auto_auto] sm:gap-x-3"
           >
             <span className="grid size-7 place-items-center rounded-lg bg-white/5 font-mono text-[10px] tabular-nums text-[var(--color-fg-muted)]">
               {String(idx + 1).padStart(2, "0")}
             </span>
 
-            <select
+            <VehicleSelect
               value={leg.vIdx}
-              onChange={(e) => onUpdate(leg.id, "vIdx", Number(e.target.value))}
-              className="col-span-2 min-w-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[13px] outline-none transition hover:border-[var(--color-border-strong)] focus:border-[var(--color-lime)]/40 sm:col-span-1"
-            >
-              {VEHICLES.map((v, i) => (
-                <option key={i} value={i}>
-                  {v.label} — {fmtTL(v.price)}
-                </option>
-              ))}
-            </select>
+              onChange={(n) => onUpdate(leg.id, "vIdx", n)}
+            />
 
             <input
               value={leg.label}
               onChange={(e) => onUpdate(leg.id, "label", e.target.value)}
               placeholder="hat (62G, M4…)"
-              className="col-span-2 min-w-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 font-mono text-[12px] text-[var(--color-fg-muted)] outline-none transition placeholder:text-[var(--color-fg-dim)]/60 hover:border-[var(--color-border-strong)] focus:border-[var(--color-fg-muted)] focus:text-[var(--color-fg)] sm:col-span-1"
+              className="min-w-0 flex-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 font-mono text-[12px] text-[var(--color-fg-muted)] outline-none transition placeholder:text-[var(--color-fg-dim)]/60 hover:border-[var(--color-border-strong)] focus:border-[var(--color-lime)]/50 focus:text-[var(--color-fg)] focus:ring-2 focus:ring-[var(--color-lime)]/15"
             />
 
             <button
               onClick={() => onUpdate(leg.id, "isTransfer", !leg.isTransfer)}
               className={
-                "col-span-2 whitespace-nowrap rounded-full px-3 py-1.5 text-[11px] font-medium transition sm:col-span-1 " +
+                "shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-[11px] font-medium transition " +
                 (leg.isTransfer
                   ? "bg-[var(--color-lime-soft)] text-[var(--color-lime)] ring-1 ring-[var(--color-lime)]/30"
                   : "bg-white/5 text-[var(--color-fg-muted)] hover:bg-white/10 hover:text-[var(--color-fg)]")
@@ -696,29 +1239,142 @@ function TripBlock({
               {leg.isTransfer ? "✶ aktarmalı" : "aktarmasız"}
             </button>
 
-            <span className="font-mono text-[12px] tabular-nums text-[var(--color-fg)]">
-              {fmtTL(VEHICLES[leg.vIdx].price)}
+            <span
+              className={
+                "ml-auto shrink-0 font-mono text-[12px] tabular-nums sm:ml-0 " +
+                (leg.isTransfer ? "text-[var(--color-lime)]" : "text-[var(--color-fg)]")
+              }
+              title={leg.isTransfer ? "Aktarma indirimi uygulandı" : undefined}
+            >
+              {fmtTL(prices[idx])}
             </span>
 
             <button
               onClick={() => legs.length > 1 && onRemove(leg.id)}
               disabled={legs.length <= 1}
-              className="size-7 rounded-lg text-[var(--color-fg-dim)] transition hover:bg-[var(--color-rose)]/10 hover:text-[var(--color-rose)] disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-[var(--color-fg-dim)]"
+              className="grid size-7 shrink-0 place-items-center rounded-lg text-[var(--color-fg-dim)] transition hover:bg-[var(--color-rose)]/10 hover:text-[var(--color-rose)] disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-[var(--color-fg-dim)]"
+              aria-label="Bu aracı sil"
             >
               ✕
             </button>
           </li>
-        ))}
+        ));
+        })()}
       </ol>
     </div>
   );
 }
 
-function CopyIcon() {
+/* ───────────────────────── Vehicle select (custom dropdown) ───────────────────────── */
+function VehicleSelect({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (n: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const v = VEHICLES[value];
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="9" y="9" width="13" height="13" rx="2" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
+    <div
+      ref={wrapRef}
+      className="relative min-w-0 flex-1 basis-full sm:basis-auto"
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={
+          "flex w-full items-center gap-2 rounded-lg border bg-[var(--color-surface)] px-3 py-2 text-left text-[13px] transition " +
+          (open
+            ? "border-[var(--color-lime)]/50 ring-2 ring-[var(--color-lime)]/15"
+            : "border-[var(--color-border)] hover:border-[var(--color-border-strong)]")
+        }
+      >
+        <span className="grid size-6 shrink-0 place-items-center rounded-md bg-[var(--color-lime-soft)] font-mono text-[11px] text-[var(--color-lime)]">
+          {v.icon}
+        </span>
+        <span className="min-w-0 flex-1 truncate">{v.label}</span>
+        <span className="shrink-0 font-mono text-[11px] tabular-nums text-[var(--color-fg-muted)]">
+          {fmtTL(v.price)}
+        </span>
+        <span
+          className={
+            "shrink-0 text-[var(--color-fg-dim)] transition " +
+            (open ? "rotate-180" : "")
+          }
+        >
+          ▾
+        </span>
+      </button>
+
+      {open && (
+        <div className="absolute left-0 top-[calc(100%+4px)] z-30 max-h-[320px] w-[min(360px,calc(100vw-2rem))] overflow-auto rounded-xl border border-[var(--color-border-strong)] bg-[var(--color-surface-2)] p-1 shadow-2xl">
+          <ul role="listbox">
+            {VEHICLES.map((opt, i) => {
+              if (opt.aktarma) return null; // dropdown'da gizli
+              const selected = i === value;
+              return (
+                <li key={i}>
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={selected}
+                    onClick={() => {
+                      onChange(i);
+                      setOpen(false);
+                    }}
+                    className={
+                      "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition " +
+                      (selected
+                        ? "bg-[var(--color-lime-soft)] text-[var(--color-lime)]"
+                        : "text-[var(--color-fg)] hover:bg-white/5")
+                    }
+                  >
+                    <span
+                      className={
+                        "grid size-6 shrink-0 place-items-center rounded-md font-mono text-[11px] " +
+                        (selected
+                          ? "bg-[var(--color-lime)]/20 text-[var(--color-lime)]"
+                          : "bg-white/5 text-[var(--color-fg-muted)]")
+                      }
+                    >
+                      {opt.icon}
+                    </span>
+                    <span className="flex-1 whitespace-nowrap">{opt.label}</span>
+                    <span
+                      className={
+                        "shrink-0 font-mono text-[11px] tabular-nums " +
+                        (selected ? "text-[var(--color-lime)]" : "text-[var(--color-fg-dim)]")
+                      }
+                    >
+                      {fmtTL(opt.price)}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
+

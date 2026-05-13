@@ -44,19 +44,14 @@
   body {
     background-image:
       radial-gradient(
-        ellipse 60% 50% at 10% -10%,
-        rgba(214, 255, 61, 0.08) 0%,
+        ellipse 70% 50% at 0% -10%,
+        rgba(214, 255, 61, 0.05) 0%,
         transparent 55%
       ),
       radial-gradient(
-        ellipse 60% 50% at 110% 110%,
-        rgba(167, 139, 250, 0.09) 0%,
+        ellipse 60% 45% at 110% 100%,
+        rgba(167, 139, 250, 0.06) 0%,
         transparent 55%
-      ),
-      radial-gradient(
-        ellipse 40% 30% at 50% 50%,
-        rgba(125, 211, 252, 0.04) 0%,
-        transparent 60%
       );
     background-attachment: fixed;
     min-height: 100dvh;
@@ -78,6 +73,17 @@
     background-position: right 0.75rem center;
     background-size: 0.7rem;
     padding-right: 1.8rem;
+  }
+
+  /* Dark-themed native option list */
+  option {
+    background: var(--color-surface-2);
+    color: var(--color-fg);
+    padding: 0.5rem;
+  }
+  option:checked {
+    background: var(--color-lime-soft);
+    color: var(--color-lime);
   }
 
   input[type="number"]::-webkit-outer-spin-button,
