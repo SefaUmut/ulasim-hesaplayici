@@ -215,7 +215,7 @@ export default function UlasimHesaplayici() {
         updated_at: new Date().toISOString(),
       });
       setSyncState(error ? "error" : "saved");
-    }, 800);
+    }, 300);
   }, [profiles, senderName, companyName, hydrated, session]);
 
   // Save B — monthly entry (totalWorkdays + profile_days[] + snapshot total) → monthly_entries
@@ -253,8 +253,19 @@ export default function UlasimHesaplayici() {
       });
       setSyncState(error ? "error" : "saved");
       if (!error) fetchHistory(session.user.id);
-    }, 800);
+    }, 300);
   }, [profiles, totalWorkdays, periodMonth, periodYear, hydrated, session, monthLoading]);
+
+  // Pending save uyarısı — kullanıcı kaydedilmeden sekmeyi kapatmaya kalkarsa onay sor.
+  useEffect(() => {
+    if (syncState !== "saving") return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [syncState]);
 
   // Subscribe to auth changes. Auto-open login if no session.
   useEffect(() => {
