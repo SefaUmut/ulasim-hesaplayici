@@ -121,6 +121,8 @@ export default function UlasimHesaplayici() {
   const shapeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const monthTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [monthLoading, setMonthLoading] = useState(false);
+  const [monthReady, setMonthReady] = useState(false);
+  const loadToken = useRef(0);
 
   type HistoryRow = {
     year: number;
@@ -223,6 +225,7 @@ export default function UlasimHesaplayici() {
   // Save B — monthly entry (totalWorkdays + profile_days[] + snapshot total) → monthly_entries
   useEffect(() => {
     if (!hydrated || !session) return;
+    if (!monthReady) return; // Aya ait kayıt çekilmeden Save B çalışmasın
     if (monthLoading) {
       // A new month is being loaded: cancel any pending stale save
       if (monthTimer.current) clearTimeout(monthTimer.current);
@@ -256,7 +259,7 @@ export default function UlasimHesaplayici() {
       setSyncState(error ? "error" : "saved");
       if (!error) fetchHistory(session.user.id);
     }, 300);
-  }, [profiles, totalWorkdays, periodMonth, periodYear, hydrated, session, monthLoading]);
+  }, [profiles, totalWorkdays, periodMonth, periodYear, hydrated, session, monthLoading, monthReady]);
 
   // Pending save uyarısı — kullanıcı kaydedilmeden sekmeyi kapatmaya kalkarsa onay sor.
   useEffect(() => {
@@ -338,14 +341,21 @@ export default function UlasimHesaplayici() {
   useEffect(() => {
     if (!session || !hydrated) return;
     setMonthLoading(true);
+    setMonthReady(false);
+    const token = ++loadToken.current;
+    const targetYear = periodYear;
+    const targetMonth = periodMonth;
     (async () => {
       const { data } = await supabase
         .from("monthly_entries")
         .select("total_workdays, profile_days, profiles")
         .eq("user_id", session.user.id)
-        .eq("year", periodYear)
-        .eq("month", periodMonth)
+        .eq("year", targetYear)
+        .eq("month", targetMonth)
         .maybeSingle();
+
+      // Eski/iptal edilmiş fetch — kullanıcı bu süre içinde başka aya geçti
+      if (token !== loadToken.current) return;
 
       // Apply a row to local state. Prefer new-format profiles; fall back to
       // overlaying days on currently loaded shapes (legacy rows).
@@ -373,6 +383,7 @@ export default function UlasimHesaplayici() {
         setProfiles([buildStandardTemplate()]);
       }
       setMonthLoading(false);
+      setMonthReady(true);
     })();
   }, [session, hydrated, periodMonth, periodYear]);
 
