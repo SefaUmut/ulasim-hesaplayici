@@ -67,31 +67,30 @@ type Profile = { name: string; days: number; going: Leg[]; returning: Leg[] };
 let uid = 1;
 const newLeg = (vIdx = 0): Leg => ({ id: uid++, vIdx, label: "", isTransfer: false });
 
-const defaultStandard: Profile = {
+// Standart güzergah template — yeni aya geçildiğinde de bu uygulanır.
+// vIdx 0 = Otobüs/Metro/Tramvay, vIdx 4 = Metrobüs 4-9 durak (5 durak için)
+const STANDARD_WORKDAYS = 22;
+
+const buildStandardTemplate = (): Profile => ({
   name: "Standart güzergah",
-  days: 18,
+  days: STANDARD_WORKDAYS,
   going: [
     { id: uid++, vIdx: 0, label: "62 / 62G", isTransfer: false },
-    { id: uid++, vIdx: 5, label: "34AS / 34G", isTransfer: false },
-    { id: uid++, vIdx: 12, label: "M4 Metro", isTransfer: true },
-    { id: uid++, vIdx: 13, label: "14BK / 20U", isTransfer: true },
+    { id: uid++, vIdx: 4, label: "34AS / 34GG", isTransfer: true },
+    { id: uid++, vIdx: 0, label: "M4 Metro", isTransfer: true },
+    { id: uid++, vIdx: 0, label: "14BK / 20E / 20Ü", isTransfer: true },
   ],
   returning: [
-    { id: uid++, vIdx: 0, label: "14BK / 20U", isTransfer: false },
-    { id: uid++, vIdx: 5, label: "Metrobüs", isTransfer: false },
-    { id: uid++, vIdx: 12, label: "62", isTransfer: true },
+    { id: uid++, vIdx: 0, label: "14BK / 20E / 20Ü", isTransfer: false },
+    { id: uid++, vIdx: 4, label: "Metrobüs 5 durak", isTransfer: true },
+    { id: uid++, vIdx: 0, label: "62 / 62G", isTransfer: true },
   ],
-};
+});
 
-const defaultClient: Profile = {
-  name: "Müşteri ziyareti",
-  days: 4,
-  going: [newLeg(0)],
-  returning: [newLeg(0)],
-};
+const defaultStandard: Profile = buildStandardTemplate();
 
 export default function UlasimHesaplayici() {
-  const [profiles, setProfiles] = useState<Profile[]>([defaultStandard, defaultClient]);
+  const [profiles, setProfiles] = useState<Profile[]>([defaultStandard]);
   const [totalWorkdays, setTotalWorkdays] = useState(22);
   const [senderName, setSenderName] = useState("");
   const [companyName, setCompanyName] = useState("");
@@ -350,19 +349,9 @@ export default function UlasimHesaplayici() {
       if (data) {
         applyRow(data as { total_workdays: number; profile_days: number[] | null; profiles: Profile[] | null });
       } else {
-        // No entry for this period — carry forward latest prior month
-        const { data: prior } = await supabase
-          .from("monthly_entries")
-          .select("total_workdays, profile_days, profiles")
-          .eq("user_id", session.user.id)
-          .or(`year.lt.${periodYear},and(year.eq.${periodYear},month.lt.${periodMonth})`)
-          .order("year", { ascending: false })
-          .order("month", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        if (prior) {
-          applyRow(prior as { total_workdays: number; profile_days: number[] | null; profiles: Profile[] | null });
-        }
+        // No entry for this period — start with the Standart güzergah template
+        setTotalWorkdays(STANDARD_WORKDAYS);
+        setProfiles([buildStandardTemplate()]);
       }
       setMonthLoading(false);
     })();
@@ -388,7 +377,7 @@ export default function UlasimHesaplayici() {
     await supabase.auth.signOut();
     setSession(null);
     // Reset to defaults — nothing persists locally
-    setProfiles([defaultStandard, defaultClient]);
+    setProfiles([buildStandardTemplate()]);
     setTotalWorkdays(22);
     setSenderName("");
     setCompanyName("");
@@ -573,8 +562,9 @@ export default function UlasimHesaplayici() {
       </header>
 
       {/* Period + Total bar */}
-      <section className="relative overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 sm:p-5">
-        <div className="pointer-events-none absolute -right-20 -top-16 size-[240px] rounded-full bg-[var(--color-lime)] opacity-[0.06] blur-3xl" />
+      <section className="relative overflow-hidden rounded-2xl border border-[var(--color-border)] bg-gradient-to-b from-[var(--color-surface)] to-[var(--color-surface-2)] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] sm:p-6">
+        <div className="pointer-events-none absolute -right-24 -top-20 size-[280px] rounded-full bg-[var(--color-lime)] opacity-[0.08] blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-24 -left-20 size-[220px] rounded-full bg-[var(--color-violet)] opacity-[0.06] blur-3xl" />
         <div className="relative flex flex-wrap items-end justify-between gap-4">
           <div className="flex items-center gap-1">
             <button
@@ -601,24 +591,57 @@ export default function UlasimHesaplayici() {
             </button>
           </div>
           <div className="text-right">
-            <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-[var(--color-fg-dim)]">
+            <p className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.25em] text-[var(--color-fg-dim)]">
+              <span className="size-1 rounded-full bg-[var(--color-lime)] shadow-[0_0_8px_var(--color-lime)]" />
               Aylık toplam
             </p>
-            <p className="mt-1 font-display text-[40px] leading-none tracking-tight text-[var(--color-lime)] tabular-nums sm:text-[48px]">
+            <p
+              className="mt-1 font-display text-[42px] leading-none tracking-tight tabular-nums sm:text-[52px]"
+              style={{
+                background:
+                  "linear-gradient(180deg, var(--color-lime) 0%, color-mix(in srgb, var(--color-lime) 75%, transparent) 100%)",
+                WebkitBackgroundClip: "text",
+                backgroundClip: "text",
+                color: "transparent",
+                textShadow: "0 8px 32px rgba(214,255,61,0.18)",
+              }}
+            >
               {fmt(grandTotal)}
-              <span className="ml-1 align-top text-lg font-normal text-[var(--color-fg-muted)]">₺</span>
+              <span className="ml-1 align-top text-lg font-normal text-[var(--color-fg-muted)]" style={{ WebkitTextFillColor: "var(--color-fg-muted)" }}>₺</span>
             </p>
           </div>
         </div>
 
         <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--color-border)] pt-3">
-          <div className="flex items-center gap-2 text-[13px] text-[var(--color-fg-muted)]">
+          <div className="flex flex-wrap items-center gap-2 text-[13px] text-[var(--color-fg-muted)]">
             <span>Çalışma günü</span>
-            {assignedDays !== totalWorkdays && (
-              <span className="font-mono text-[10px] text-[var(--color-rose)]">
-                ⚠ atanan {assignedDays}
-              </span>
-            )}
+            {(() => {
+              const diff = totalWorkdays - assignedDays;
+              if (diff === 0) return null;
+              if (diff > 0) {
+                return (
+                  <button
+                    onClick={() => {
+                      // Eksik günleri ilk profile ekle
+                      setProfiles((p) =>
+                        p.map((x, i) =>
+                          i === 0 ? { ...x, days: Number(x.days) + diff } : x,
+                        ),
+                      );
+                    }}
+                    className="inline-flex items-center gap-1 rounded-full bg-[var(--color-sky)]/10 px-2.5 py-0.5 font-mono text-[10px] text-[var(--color-sky)] transition hover:bg-[var(--color-sky)]/20"
+                    title={`${diff} günü ilk güzergaha ekle`}
+                  >
+                    {diff} gün boşta · ekle
+                  </button>
+                );
+              }
+              return (
+                <span className="inline-flex items-center gap-1 rounded-full bg-[var(--color-rose)]/10 px-2.5 py-0.5 font-mono text-[10px] text-[var(--color-rose)]">
+                  ⚠ {Math.abs(diff)} gün fazla
+                </span>
+              );
+            })()}
           </div>
           <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-2)] p-0.5">
             <button
@@ -755,11 +778,12 @@ export default function UlasimHesaplayici() {
       })()}
 
       {/* Profiles */}
-      <section className="mt-6">
-        <div className="mb-3 flex items-baseline justify-between px-1">
+      <section className="mt-8">
+        <div className="mb-3 flex items-center gap-3 px-1">
           <h2 className="font-display text-xl italic tracking-tight text-[var(--color-fg)]">
             Güzergahlar
           </h2>
+          <span className="h-px flex-1 bg-gradient-to-r from-[var(--color-border)] to-transparent" />
           <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
             {profiles.length} adet
           </span>
@@ -788,9 +812,12 @@ export default function UlasimHesaplayici() {
         </ul>
         <button
           onClick={addProfile}
-          className="mt-2 w-full rounded-lg border border-dashed border-[var(--color-border)] py-2.5 text-[13px] text-[var(--color-fg-muted)] transition hover:border-[var(--color-lime)]/40 hover:bg-[var(--color-lime-soft)] hover:text-[var(--color-lime)]"
+          className="group mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--color-border)] bg-gradient-to-b from-transparent to-white/[0.01] py-3 text-[13px] text-[var(--color-fg-muted)] transition-all hover:border-[var(--color-lime)]/40 hover:bg-[var(--color-lime-soft)] hover:text-[var(--color-lime)]"
         >
-          + Güzergah ekle
+          <span className="grid size-5 place-items-center rounded-full border border-current text-[11px] transition group-hover:bg-[var(--color-lime)]/15">
+            +
+          </span>
+          Güzergah ekle
         </button>
       </section>
 
@@ -822,10 +849,10 @@ export default function UlasimHesaplayici() {
 
       {/* Request letter */}
       <section className="mt-4">
-        <details className="group rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]">
+        <details className="group rounded-xl border border-[var(--color-border)] bg-gradient-to-b from-[var(--color-surface)] to-[var(--color-surface-2)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-colors hover:border-[var(--color-border-strong)]">
           <summary className="flex cursor-pointer items-center justify-between px-4 py-3 text-[13px] font-medium [&::-webkit-details-marker]:hidden">
-            <span className="inline-flex items-center gap-2">
-              <span className="text-[var(--color-fg-muted)] transition group-open:rotate-90">▸</span>
+            <span className="inline-flex items-center gap-2.5">
+              <span className="grid size-5 place-items-center rounded-md bg-white/5 text-[var(--color-fg-muted)] transition group-open:rotate-90 group-open:bg-[var(--color-lime-soft)] group-open:text-[var(--color-lime)]">▸</span>
               Talep metnini gör & kopyala
             </span>
             <button
@@ -835,10 +862,10 @@ export default function UlasimHesaplayici() {
                 copyText();
               }}
               className={
-                "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[12px] font-medium transition " +
+                "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[12px] font-medium transition-all " +
                 (copied
-                  ? "bg-[var(--color-lime)] text-[#0a0a0c]"
-                  : "bg-[var(--color-fg)] text-[#0a0a0c] hover:bg-[var(--color-lime)]")
+                  ? "bg-[var(--color-lime)] text-[#0a0a0c] shadow-[0_0_0_1px_rgba(214,255,61,0.3),0_8px_24px_-8px_rgba(214,255,61,0.5)]"
+                  : "bg-[var(--color-fg)] text-[#0a0a0c] hover:bg-[var(--color-lime)] hover:shadow-[0_0_0_1px_rgba(214,255,61,0.3),0_8px_24px_-8px_rgba(214,255,61,0.5)]")
               }
             >
               {copied ? "✓ kopyalandı" : "kopyala"}
@@ -1045,8 +1072,8 @@ function ProfileRow({
 
   return (
     <li
-      className="group/row relative rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] transition hover:border-[var(--color-border-strong)]"
-      style={{ borderLeftWidth: "3px", borderLeftColor: `color-mix(in srgb, ${accent} 55%, transparent)` }}
+      className="group/row relative rounded-xl border border-[var(--color-border)] bg-gradient-to-b from-[var(--color-surface)] to-[var(--color-surface-2)] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-200 hover:border-[var(--color-border-strong)] hover:-translate-y-[1px] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_8px_24px_-12px_rgba(0,0,0,0.5)]"
+      style={{ borderLeftWidth: "3px", borderLeftColor: `color-mix(in srgb, ${accent} 60%, transparent)` }}
     >
       {/* Compact header row */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-2 px-3 py-2.5">
@@ -1061,7 +1088,7 @@ function ProfileRow({
         <input
           value={p.name}
           onChange={(e) => updateProfile(pi, "name", e.target.value)}
-          className="min-w-0 flex-1 basis-[140px] bg-transparent text-[15px] font-medium outline-none placeholder:text-[var(--color-fg-dim)]"
+          className="min-w-[120px] max-w-full bg-transparent text-[15px] font-medium outline-none placeholder:text-[var(--color-fg-dim)] [field-sizing:content]"
           placeholder="Güzergah adı"
         />
         <button
@@ -1069,7 +1096,7 @@ function ProfileRow({
             const next = window.prompt("Güzergah adını düzenle:", p.name);
             if (next !== null && next.trim()) updateProfile(pi, "name", next.trim());
           }}
-          className="hidden size-7 shrink-0 place-items-center rounded-md text-[var(--color-fg-dim)] transition hover:bg-white/5 hover:text-[var(--color-fg-muted)] sm:grid"
+          className="grid size-7 shrink-0 place-items-center rounded-md text-[var(--color-fg-dim)] transition hover:bg-white/5 hover:text-[var(--color-fg-muted)]"
           title="Adı düzenle"
           aria-label="Adı düzenle"
         >

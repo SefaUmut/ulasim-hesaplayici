@@ -10,7 +10,6 @@
   --color-bg-2: #111114;
   --color-surface: #16161a;
   --color-surface-2: #1c1c22;
-  --color-elevated: #22222a;
   --color-border: rgba(255, 255, 255, 0.07);
   --color-border-strong: rgba(255, 255, 255, 0.14);
 
@@ -105,30 +104,6 @@
   }
 }
 
-.grid-bg {
-  background-image:
-    linear-gradient(to right, rgba(255, 255, 255, 0.04) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
-  background-size: 48px 48px;
-  mask-image: radial-gradient(
-    ellipse 70% 60% at 50% 30%,
-    black 30%,
-    transparent 80%
-  );
-  -webkit-mask-image: radial-gradient(
-    ellipse 70% 60% at 50% 30%,
-    black 30%,
-    transparent 80%
-  );
-}
-
-.glow-lime {
-  box-shadow:
-    0 0 0 1px rgba(214, 255, 61, 0.25),
-    0 10px 50px -10px rgba(214, 255, 61, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
-}
-
 .chip {
   display: inline-flex;
   align-items: center;
@@ -142,36 +117,6 @@
   color: var(--color-fg-muted);
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--color-border);
-}
-
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%      { opacity: 0.5; transform: scale(0.85); }
-}
-.live-dot {
-  width: 6px; height: 6px; border-radius: 999px;
-  background: var(--color-lime);
-  box-shadow: 0 0 10px var(--color-lime);
-  animation: pulse-dot 1.8s ease-in-out infinite;
-}
-
-@keyframes marquee {
-  from { transform: translateX(0); }
-  to   { transform: translateX(-50%); }
-}
-.marquee-track {
-  animation: marquee 50s linear infinite;
-}
-.marquee-track:hover {
-  animation-play-state: paused;
-}
-
-@keyframes rise {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-.rise {
-  animation: rise 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
 textarea::-webkit-scrollbar { width: 8px; }
