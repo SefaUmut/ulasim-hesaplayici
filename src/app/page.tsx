@@ -47,7 +47,7 @@ const VEHICLES = [
   { label: "Metrobüs · 22–27 durak", short: "Metrobüs 22–27", icon: "▶▶", price: 56.97 },
   { label: "Metrobüs · 28–33 durak", short: "Metrobüs 28–33", icon: "▶▶▶", price: 58.87 },
   { label: "Metrobüs · 34–43+ durak", short: "Metrobüs 34+", icon: "▶▶▶", price: 62.35 },
-  { label: "Marmaray (1–7 durak)", short: "Marmaray", icon: "═", price: 34.0 },
+  { label: "Marmaray · 1–7 durak", short: "Marmaray 1–7", icon: "═", price: 34.0 },
   { label: "Vapur — Kadıköy / Eminönü", short: "Vapur", icon: "≈", price: 59.28 },
   // Manuel aktarma kalemleri — dropdown'dan gizli, sadece eski data ile uyumluluk için tutuluyor.
   { label: "1. aktarma indirimi", short: "1. aktarma", icon: "↻", price: 31.27, aktarma: true },
@@ -55,6 +55,12 @@ const VEHICLES = [
   { label: "3. aktarma indirimi", short: "3. aktarma", icon: "↻↻↻", price: 15.62, aktarma: true },
   { label: "4. aktarma indirimi", short: "4. aktarma", icon: "↻↻↻", price: 15.62, aktarma: true },
   { label: "5. aktarma indirimi", short: "5. aktarma", icon: "↻↻↻", price: 15.62, aktarma: true },
+  // Marmaray ek mesafe kademeleri — sondaki konumları, mevcut kayıtlı vIdx'leri bozmamak için.
+  { label: "Marmaray · 8–14 durak", short: "Marmaray 8–14", icon: "══", price: 43.4 },
+  { label: "Marmaray · 15–21 durak", short: "Marmaray 15–21", icon: "══", price: 50.1 },
+  { label: "Marmaray · 22–28 durak", short: "Marmaray 22–28", icon: "═══", price: 57.78 },
+  { label: "Marmaray · 29–35 durak", short: "Marmaray 29–35", icon: "═══", price: 67.49 },
+  { label: "Marmaray · 36–43 durak", short: "Marmaray 36–43", icon: "═══", price: 74.7 },
 ];
 
 const fmt = (n: number) =>
@@ -1057,14 +1063,20 @@ export default function UlasimHesaplayici() {
                 ✕
               </button>
             </header>
-            <div className="overflow-auto p-3">
+            <div className="space-y-3 overflow-auto p-3">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src="/IETT Ulaşım Ücret Tarifesi.jpeg"
                 alt="İBB UKOME 16.02.2026 ulaşım ücret tarifesi"
                 className="block h-auto w-full rounded-xl"
               />
-              <p className="mt-3 text-center font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/Marmaray Ücretlendirme.jpeg"
+                alt="Marmaray ücretlendirme tarifesi"
+                className="block h-auto w-full rounded-xl"
+              />
+              <p className="text-center font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
                 12.02.2026 · 263 sayılı meclis kararı
               </p>
             </div>
