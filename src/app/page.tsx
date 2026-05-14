@@ -126,32 +126,49 @@ const buildFromPreset = (p: CustomerPreset): Profile => ({
   returning: p.returning.map((l) => ({ id: uid++, vIdx: l.vIdx, label: l.label, isTransfer: l.isTransfer })),
 });
 
+type AppStatus = "auth-loading" | "no-session" | "loading-cloud" | "loading-month" | "ready" | "error";
+
 export default function UlasimHesaplayici() {
   const [profiles, setProfiles] = useState<Profile[]>([defaultStandard]);
-  const [totalWorkdays, setTotalWorkdays] = useState(22);
+  const [totalWorkdays, setTotalWorkdays] = useState(STANDARD_WORKDAYS);
   const [senderName, setSenderName] = useState("");
   const [companyName, setCompanyName] = useState("");
   const now0 = new Date();
   const [periodMonth, setPeriodMonth] = useState(now0.getMonth());
   const [periodYear, setPeriodYear] = useState(now0.getFullYear());
   const [copied, setCopied] = useState(false);
-  const [hydrated, setHydrated] = useState(false);
   const [tarifeOpen, setTarifeOpen] = useState(false);
 
   // Auth & sync state
   const [session, setSession] = useState<Session | null>(null);
-  const [authChecked, setAuthChecked] = useState(false);
   const [authPassword, setAuthPassword] = useState("");
   const [authSending, setAuthSending] = useState(false);
   const [authMsg, setAuthMsg] = useState<string | null>(null);
   const [recoveryMode, setRecoveryMode] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [syncState, setSyncState] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  const shapeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const monthTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [monthLoading, setMonthLoading] = useState(false);
-  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const [appStatus, setAppStatus] = useState<AppStatus>("auth-loading");
+  const [dirty, setDirty] = useState(false);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadToken = useRef(0);
+  const markDirty = () => setDirty(true);
+  const editTotalWorkdays = (updater: number | ((d: number) => number)) => {
+    markDirty();
+    setTotalWorkdays(updater);
+  };
+  const editSenderName = (v: string) => {
+    markDirty();
+    setSenderName(v);
+  };
+  const editCompanyName = (v: string) => {
+    markDirty();
+    setCompanyName(v);
+  };
+
+  // Derived flags — UI uses these instead of separate booleans.
+  const authChecked = appStatus !== "auth-loading";
+  const isReady = appStatus === "ready";
+  const monthLoading = appStatus === "loading-month";
 
   type HistoryRow = {
     year: number;
@@ -189,6 +206,7 @@ export default function UlasimHesaplayici() {
   const requestCopy = (h: HistoryRow) => {
     const key = `${h.year}-${h.month}`;
     if (pendingCopy === key) {
+      markDirty();
       setTotalWorkdays(h.total_workdays);
       if (h.profiles && h.profiles.length > 0) {
         // New format — clone the full profile list (shapes + days) with fresh leg ids
@@ -225,103 +243,125 @@ export default function UlasimHesaplayici() {
     setHistory((h) => h.filter((r) => !(r.year === year && r.month === month)));
   };
 
-  const shiftPeriod = (delta: number) => {
+  const goToPeriod = async (year: number, month: number) => {
+    if (!isReady) return;
+    if (year === periodYear && month === periodMonth) return;
+    await flushSave();
+    setPeriodMonth(month);
+    setPeriodYear(year);
+    setAppStatus("loading-month");
+  };
+  const shiftPeriod = async (delta: number) => {
     const d = new Date(periodYear, periodMonth + delta, 1);
-    setPeriodMonth(d.getMonth());
-    setPeriodYear(d.getFullYear());
+    await goToPeriod(d.getFullYear(), d.getMonth());
   };
 
-  // Save A — profile SHAPES + sender/company → user_data
-  useEffect(() => {
-    if (!hydrated || !session) return;
+  // Save snapshot — her render'da en güncel state'i ref'e yansıt. flushSave bunu kullanır.
+  const stateRef = useRef({
+    session,
+    profiles,
+    totalWorkdays,
+    senderName,
+    companyName,
+    periodYear,
+    periodMonth,
+  });
+  stateRef.current = { session, profiles, totalWorkdays, senderName, companyName, periodYear, periodMonth };
+
+  const doSave = async (snap: typeof stateRef.current): Promise<boolean> => {
+    if (!snap.session) return false;
     setSyncState("saving");
-    if (shapeTimer.current) clearTimeout(shapeTimer.current);
-    shapeTimer.current = setTimeout(async () => {
-      const shapes = profiles.map((p) => ({
-        name: p.name,
-        going: p.going,
-        returning: p.returning,
-      }));
-      const { error } = await supabase.from("user_data").upsert({
-        user_id: session.user.id,
-        data: { profiles: shapes, senderName, companyName },
+    const shapes = snap.profiles.map((p) => ({
+      name: p.name,
+      going: p.going,
+      returning: p.returning,
+    }));
+    const profile_days = snap.profiles.map((p) => Number(p.days) || 0);
+    const monthly_total = snap.profiles.reduce(
+      (sum, p, i) =>
+        sum + (legsTotal(p.going) + legsTotal(p.returning)) * (profile_days[i] || 0),
+      0,
+    );
+    const [r1, r2] = await Promise.all([
+      supabase.from("user_data").upsert({
+        user_id: snap.session.user.id,
+        data: { profiles: shapes, senderName: snap.senderName, companyName: snap.companyName },
         updated_at: new Date().toISOString(),
-      });
-      setSyncState(error ? "error" : "saved");
-    }, 300);
-  }, [profiles, senderName, companyName, hydrated, session]);
-
-  // Save B — monthly entry (totalWorkdays + profile_days[] + snapshot total) → monthly_entries
-  useEffect(() => {
-    if (!hydrated || !session) return;
-    const periodKey = `${periodYear}-${periodMonth}`;
-    // Yüklü olan ay, şu anki ayla eşleşmiyorsa kayıt yapma — profil verisi eski aydan kalma olabilir.
-    if (loadedKey !== periodKey) {
-      if (monthTimer.current) clearTimeout(monthTimer.current);
-      return;
-    }
-    if (monthLoading) {
-      if (monthTimer.current) clearTimeout(monthTimer.current);
-      return;
-    }
-    const targetYear = periodYear;
-    const targetMonth = periodMonth;
-    setSyncState("saving");
-    if (monthTimer.current) clearTimeout(monthTimer.current);
-    monthTimer.current = setTimeout(async () => {
-      // Final guard: period must still match
-      if (targetYear !== periodYear || targetMonth !== periodMonth) return;
-
-      const profile_days = profiles.map((p) => Number(p.days) || 0);
-      const monthly_total = profiles.reduce(
-        (sum, p, i) =>
-          sum +
-          (legsTotal(p.going) + legsTotal(p.returning)) * (profile_days[i] || 0),
-        0,
-      );
-      const { error } = await supabase.from("monthly_entries").upsert({
-        user_id: session.user.id,
-        year: targetYear,
-        month: targetMonth,
-        total_workdays: totalWorkdays,
+      }),
+      supabase.from("monthly_entries").upsert({
+        user_id: snap.session.user.id,
+        year: snap.periodYear,
+        month: snap.periodMonth,
+        total_workdays: snap.totalWorkdays,
         profile_days,
-        profiles, // full shape (name + legs + days) — per-month, independent
+        profiles: snap.profiles,
         monthly_total,
         updated_at: new Date().toISOString(),
-      });
-      setSyncState(error ? "error" : "saved");
-      if (!error) fetchHistory(session.user.id);
+      }),
+    ]);
+    const error = r1.error || r2.error;
+    setSyncState(error ? "error" : "saved");
+    if (!error) fetchHistory(snap.session.user.id);
+    return !error;
+  };
+
+  // flushSave — pending save varsa hemen tetikle. shiftPeriod ve beforeunload'da kullanılır.
+  const flushSave = async (): Promise<void> => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      const ok = await doSave(stateRef.current);
+      if (ok) setDirty(false);
+    }
+  };
+
+  // Save effect — yalnızca dirty + ready iken çalışır. Load akışı dirty'i true yapmaz.
+  useEffect(() => {
+    if (!isReady || !dirty || !session) return;
+    setSyncState("saving");
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      const ok = await doSave(stateRef.current);
+      saveTimer.current = null;
+      if (ok) setDirty(false);
     }, 300);
-  }, [profiles, totalWorkdays, periodMonth, periodYear, hydrated, session, monthLoading, loadedKey]);
+  }, [profiles, totalWorkdays, senderName, companyName, periodMonth, periodYear, dirty, isReady, session]);
 
   // Pending save uyarısı — kullanıcı kaydedilmeden sekmeyi kapatmaya kalkarsa onay sor.
   useEffect(() => {
-    if (syncState !== "saving") return;
+    if (!dirty) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = "";
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [syncState]);
+  }, [dirty]);
 
-  // Subscribe to auth changes. Auto-open login if no session.
+  // Auth init — appStatus state machine'ın giriş noktası.
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setAuthChecked(true);
-      if (!data.session) setHydrated(true); // modal otomatik açılır, app gizli
+      if (data.session) {
+        setSession(data.session);
+        setAppStatus("loading-cloud");
+      } else {
+        setAppStatus("no-session");
+      }
     });
     const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
       setSession(s);
       if (event === "PASSWORD_RECOVERY") setRecoveryMode(true);
+      if (s && (event === "SIGNED_IN" || event === "TOKEN_REFRESHED")) {
+        setAppStatus((prev) => (prev === "no-session" || prev === "auth-loading" ? "loading-cloud" : prev));
+      }
+      if (!s && event === "SIGNED_OUT") setAppStatus("no-session");
     });
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  // When signed in, pull profile shapes + sender/company from user_data
+  // user_data fetch — yalnızca loading-cloud durumunda çalışır. profiles'a days=0 yazmaz.
   useEffect(() => {
-    if (!session) return;
+    if (appStatus !== "loading-cloud" || !session) return;
     (async () => {
       const { data, error } = await supabase
         .from("user_data")
@@ -330,94 +370,114 @@ export default function UlasimHesaplayici() {
         .maybeSingle();
       if (error) {
         setSyncState("error");
-        setHydrated(true);
+        setAppStatus("error");
         return;
       }
       if (data?.data) {
         const cloud = data.data as Record<string, unknown>;
-        if (Array.isArray(cloud.profiles)) {
-          const shapes = cloud.profiles as Array<Omit<Profile, "id" | "days"> & { days?: number }>;
-          setProfiles(
-            shapes.map((s) => ({
-              name: s.name,
-              going: s.going,
-              returning: s.returning,
-              days: 0, // overwritten by monthly fetch
-            })),
-          );
-        }
         if (typeof cloud.senderName === "string") setSenderName(cloud.senderName);
         if (typeof cloud.companyName === "string") setCompanyName(cloud.companyName);
-        setSyncState("saved");
       } else {
-        // First time: seed user_data with current shapes
+        // İlk girişte user_data yoksa current state'i tohum olarak yaz.
         await supabase.from("user_data").upsert({
           user_id: session.user.id,
           data: {
-            profiles: profiles.map((p) => ({
-              name: p.name,
-              going: p.going,
-              returning: p.returning,
-            })),
+            profiles: profiles.map((p) => ({ name: p.name, going: p.going, returning: p.returning })),
             senderName,
             companyName,
           },
         });
-        setSyncState("saved");
       }
-      setHydrated(true);
+      setSyncState("saved");
       fetchHistory(session.user.id);
+      setAppStatus("loading-month");
     })();
-  }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
+    // profiles/senderName/companyName initial seed için intentionally kapsam dışı bırakıldı.
+  }, [appStatus, session]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load monthly entry whenever session/period changes
+  // monthly_entries fetch — loading-month durumunda çalışır, bitince ready'e geçer.
   useEffect(() => {
-    if (!session || !hydrated) return;
-    setMonthLoading(true);
+    if (appStatus !== "loading-month" || !session) return;
     const token = ++loadToken.current;
     const targetYear = periodYear;
     const targetMonth = periodMonth;
     (async () => {
-      const { data } = await supabase
-        .from("monthly_entries")
-        .select("total_workdays, profile_days, profiles")
-        .eq("user_id", session.user.id)
-        .eq("year", targetYear)
-        .eq("month", targetMonth)
-        .maybeSingle();
+      const [monthRes, shapesRes] = await Promise.all([
+        supabase
+          .from("monthly_entries")
+          .select("total_workdays, profile_days, profiles")
+          .eq("user_id", session.user.id)
+          .eq("year", targetYear)
+          .eq("month", targetMonth)
+          .maybeSingle(),
+        supabase
+          .from("user_data")
+          .select("data")
+          .eq("user_id", session.user.id)
+          .maybeSingle(),
+      ]);
 
-      // Eski/iptal edilmiş fetch — kullanıcı bu süre içinde başka aya geçti
+      // İptal: kullanıcı bu süre içinde başka aya geçti veya çıkış yaptı.
       if (token !== loadToken.current) return;
 
-      // Apply a row to local state. Prefer new-format profiles; fall back to
-      // overlaying days on currently loaded shapes (legacy rows).
-      const applyRow = (row: { total_workdays: number; profile_days: number[] | null; profiles: Profile[] | null }) => {
-        setTotalWorkdays(row.total_workdays);
-        const fullProfiles = Array.isArray(row.profiles) && row.profiles.length > 0 ? row.profiles : null;
+      const monthRow = monthRes.data as { total_workdays: number; profile_days: number[] | null; profiles: Profile[] | null } | null;
+      const cloud = (shapesRes.data?.data ?? null) as Record<string, unknown> | null;
+      const cloudShapes = cloud && Array.isArray(cloud.profiles)
+        ? (cloud.profiles as Array<{ name: string; going: Leg[]; returning: Leg[] }>)
+        : null;
+
+      if (monthRow) {
+        setTotalWorkdays(monthRow.total_workdays);
+        const fullProfiles = Array.isArray(monthRow.profiles) && monthRow.profiles.length > 0 ? monthRow.profiles : null;
         if (fullProfiles) {
-          // Re-issue stable leg ids in case stored ids collide with uid counter
           const reissued = fullProfiles.map((p) => ({
             ...p,
             going: p.going.map((l) => ({ ...l, id: uid++ })),
             returning: p.returning.map((l) => ({ ...l, id: uid++ })),
           }));
           setProfiles(reissued);
-        } else if (row.profile_days) {
-          setProfiles((prev) => prev.map((p, i) => ({ ...p, days: row.profile_days![i] ?? 0 })));
+        } else if (monthRow.profile_days && cloudShapes) {
+          // Legacy row: only profile_days saved. Bulut şekilleri üzerine gün sayılarını uygula.
+          setProfiles(
+            cloudShapes.map((s, i) => ({
+              name: s.name,
+              going: s.going.map((l) => ({ ...l, id: uid++ })),
+              returning: s.returning.map((l) => ({ ...l, id: uid++ })),
+              days: monthRow.profile_days![i] ?? 0,
+            })),
+          );
         }
-      };
-
-      if (data) {
-        applyRow(data as { total_workdays: number; profile_days: number[] | null; profiles: Profile[] | null });
       } else {
-        // No entry for this period — start with the Standart güzergah template
+        // Bu ay için hiç kayıt yok — bulut şekilleri varsa onları kullan, yoksa standart şablon.
         setTotalWorkdays(STANDARD_WORKDAYS);
-        setProfiles([buildStandardTemplate()]);
+        if (cloudShapes && cloudShapes.length > 0) {
+          setProfiles(
+            cloudShapes.map((s) => {
+              // Preset adı eşleşiyorsa onun varsayılan gün sayısını kullan (örn. CETAS=1),
+              // yoksa Standart güzergah için STANDARD_WORKDAYS, diğerleri için 1.
+              const preset = CUSTOMER_PRESETS.find((cp) => cp.name === s.name);
+              const defaultDays = preset
+                ? preset.days
+                : s.name === "Standart güzergah"
+                ? STANDARD_WORKDAYS
+                : 1;
+              return {
+                name: s.name,
+                going: s.going.map((l) => ({ ...l, id: uid++ })),
+                returning: s.returning.map((l) => ({ ...l, id: uid++ })),
+                days: defaultDays,
+              };
+            }),
+          );
+        } else {
+          setProfiles([buildStandardTemplate()]);
+        }
       }
-      setMonthLoading(false);
-      setLoadedKey(`${targetYear}-${targetMonth}`);
+      setDirty(false); // Load akışı asla dirty olmaz.
+      setAppStatus("ready");
+      fetchHistory(session.user.id);
     })();
-  }, [session, hydrated, periodMonth, periodYear]);
+  }, [appStatus, session, periodMonth, periodYear]);
 
   const submitAuth = async () => {
     const email = process.env.NEXT_PUBLIC_AUTH_EMAIL || "";
@@ -435,11 +495,13 @@ export default function UlasimHesaplayici() {
   };
 
   const signOut = async () => {
+    await flushSave();
     await supabase.auth.signOut();
     setSession(null);
-    // Reset to defaults — nothing persists locally
+    setAppStatus("no-session");
+    setDirty(false);
     setProfiles([buildStandardTemplate()]);
-    setTotalWorkdays(22);
+    setTotalWorkdays(STANDARD_WORKDAYS);
     setSenderName("");
     setCompanyName("");
     const n = new Date();
@@ -447,8 +509,10 @@ export default function UlasimHesaplayici() {
     setPeriodYear(n.getFullYear());
   };
 
-  const updateProfile = <K extends keyof Profile>(pi: number, key: K, val: Profile[K]) =>
+  const updateProfile = <K extends keyof Profile>(pi: number, key: K, val: Profile[K]) => {
+    markDirty();
     setProfiles((p) => p.map((x, i) => (i === pi ? { ...x, [key]: val } : x)));
+  };
 
   const updateLeg = <K extends keyof Leg>(
     pi: number,
@@ -456,7 +520,8 @@ export default function UlasimHesaplayici() {
     id: number,
     key: K,
     val: Leg[K],
-  ) =>
+  ) => {
+    markDirty();
     setProfiles((p) =>
       p.map((x, i) =>
         i !== pi
@@ -464,28 +529,39 @@ export default function UlasimHesaplayici() {
           : { ...x, [dir]: x[dir].map((l) => (l.id === id ? { ...l, [key]: val } : l)) },
       ),
     );
+  };
 
-  const addLeg = (pi: number, dir: "going" | "returning") =>
+  const addLeg = (pi: number, dir: "going" | "returning") => {
+    markDirty();
     setProfiles((p) => p.map((x, i) => (i !== pi ? x : { ...x, [dir]: [...x[dir], newLeg()] })));
+  };
 
-  const removeLeg = (pi: number, dir: "going" | "returning", id: number) =>
+  const removeLeg = (pi: number, dir: "going" | "returning", id: number) => {
+    markDirty();
     setProfiles((p) =>
       p.map((x, i) => (i !== pi ? x : { ...x, [dir]: x[dir].filter((l) => l.id !== id) })),
     );
+  };
 
-  const addProfile = () =>
+  const addProfile = () => {
+    markDirty();
     setProfiles((p) => [
       ...p,
       { name: `Güzergah ${p.length + 1}`, days: 1, going: [newLeg()], returning: [newLeg()] },
     ]);
+  };
 
   const addPreset = (key: string) => {
     const preset = CUSTOMER_PRESETS.find((p) => p.key === key);
     if (!preset) return;
+    markDirty();
     setProfiles((p) => [...p, buildFromPreset(preset)]);
   };
 
-  const removeProfile = (pi: number) => setProfiles((p) => p.filter((_, i) => i !== pi));
+  const removeProfile = (pi: number) => {
+    markDirty();
+    setProfiles((p) => p.filter((_, i) => i !== pi));
+  };
 
   const duplicateProfile = (pi: number) => {
     const src = profiles[pi];
@@ -495,6 +571,7 @@ export default function UlasimHesaplayici() {
     );
     if (input === null) return; // user cancelled
     const newName = input.trim() ? input.trim() : `${src.name} (kopya)`;
+    markDirty();
     setProfiles((p) => {
       const s = p[pi];
       const clone: Profile = {
@@ -623,7 +700,8 @@ export default function UlasimHesaplayici() {
           <div className="flex items-center gap-1">
             <button
               onClick={() => shiftPeriod(-1)}
-              className="grid size-8 place-items-center rounded-lg text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-fg)]"
+              disabled={!isReady}
+              className="grid size-8 place-items-center rounded-lg text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-fg)] disabled:opacity-40 disabled:hover:bg-transparent"
               aria-label="Önceki ay"
             >
               ‹
@@ -638,7 +716,8 @@ export default function UlasimHesaplayici() {
             </div>
             <button
               onClick={() => shiftPeriod(1)}
-              className="grid size-8 place-items-center rounded-lg text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-fg)]"
+              disabled={!isReady}
+              className="grid size-8 place-items-center rounded-lg text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-fg)] disabled:opacity-40 disabled:hover:bg-transparent"
               aria-label="Sonraki ay"
             >
               ›
@@ -660,7 +739,7 @@ export default function UlasimHesaplayici() {
                 textShadow: "0 8px 32px rgba(214,255,61,0.18)",
               }}
             >
-              {fmt(grandTotal)}
+              {isReady ? fmt(grandTotal) : "—"}
               <span className="ml-1 align-top text-lg font-normal text-[var(--color-fg-muted)]" style={{ WebkitTextFillColor: "var(--color-fg-muted)" }}>₺</span>
             </p>
           </div>
@@ -699,7 +778,7 @@ export default function UlasimHesaplayici() {
           </div>
           <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-2)] p-0.5">
             <button
-              onClick={() => setTotalWorkdays((d) => Math.max(1, d - 1))}
+              onClick={() => editTotalWorkdays((d) => Math.max(1, d - 1))}
               className="grid size-7 place-items-center rounded-md text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-fg)]"
             >
               −
@@ -709,11 +788,11 @@ export default function UlasimHesaplayici() {
               min={1}
               max={31}
               value={totalWorkdays}
-              onChange={(e) => setTotalWorkdays(Number(e.target.value) || 1)}
+              onChange={(e) => editTotalWorkdays(Number(e.target.value) || 1)}
               className="w-10 bg-transparent text-center text-sm font-medium tabular-nums outline-none"
             />
             <button
-              onClick={() => setTotalWorkdays((d) => Math.min(31, d + 1))}
+              onClick={() => editTotalWorkdays((d) => Math.min(31, d + 1))}
               className="grid size-7 place-items-center rounded-md text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-fg)]"
             >
               +
@@ -724,9 +803,7 @@ export default function UlasimHesaplayici() {
 
       {/* History — collapsible compact (active month hariç) */}
       {session && (() => {
-        const pastMonths = history.filter(
-          (h) => !(h.year === periodYear && h.month === periodMonth),
-        );
+        const pastMonths = history;
         if (pastMonths.length === 0) return null;
         return (
         <section className="mt-3">
@@ -736,7 +813,7 @@ export default function UlasimHesaplayici() {
           >
             <span className="inline-flex items-center gap-2">
               <span>{showHistory ? "▾" : "▸"}</span>
-              <span>Geçmiş aylar</span>
+              <span>Kayıtlı aylar</span>
               <span className="font-mono text-[10px] text-[var(--color-fg-dim)]">
                 · {pastMonths.length}
               </span>
@@ -749,7 +826,7 @@ export default function UlasimHesaplayici() {
           {showHistory && (
             <ul className="mt-2 space-y-1.5">
               {pastMonths.map((h) => {
-                const isActive = false; // active month is filtered out above
+                const isActive = h.year === periodYear && h.month === periodMonth;
                 const monthTotal =
                   h.monthly_total != null
                     ? Number(h.monthly_total)
@@ -778,10 +855,7 @@ export default function UlasimHesaplayici() {
                     }
                   >
                     <button
-                      onClick={() => {
-                        setPeriodMonth(h.month);
-                        setPeriodYear(h.year);
-                      }}
+                      onClick={() => goToPeriod(h.year, h.month)}
                       className="flex min-w-0 flex-1 items-center gap-3 text-left"
                     >
                       <span
@@ -839,7 +913,15 @@ export default function UlasimHesaplayici() {
           </h2>
           <span className="h-px flex-1 bg-gradient-to-r from-[var(--color-border)] to-transparent" />
         </div>
-        <ul className="space-y-2">
+        {!isReady && (
+          <div className="rounded-2xl border border-dashed border-[var(--color-border)] bg-white/[0.02] p-8 text-center">
+            <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-[var(--color-fg-dim)]">
+              {appStatus === "loading-cloud" ? "Bulut verisi" : "Aylık veri"} yükleniyor…
+            </p>
+            <p className="mt-2 font-display text-[18px] italic text-[var(--color-fg-muted)]">bir saniye</p>
+          </div>
+        )}
+        <ul className={"space-y-2 " + (isReady ? "" : "hidden")}>
           {profiles.map((p, pi) => (
             <ProfileRow
               key={pi}
@@ -860,7 +942,7 @@ export default function UlasimHesaplayici() {
             />
           ))}
         </ul>
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <div className={"mt-3 flex flex-col gap-2 sm:flex-row " + (isReady ? "" : "hidden")}>
           <button
             onClick={addProfile}
             className="group inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--color-border)] bg-gradient-to-b from-transparent to-white/[0.01] py-3 text-[13px] text-[var(--color-fg-muted)] transition-all hover:border-[var(--color-lime)]/40 hover:bg-[var(--color-lime-soft)] hover:text-[var(--color-lime)]"
@@ -882,7 +964,7 @@ export default function UlasimHesaplayici() {
           </span>
           <input
             value={senderName}
-            onChange={(e) => setSenderName(e.target.value)}
+            onChange={(e) => editSenderName(e.target.value)}
             placeholder="Ad Soyad"
             className="peer w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 pb-2.5 pt-5 text-[14px] outline-none transition placeholder:text-[var(--color-fg-dim)]/60 hover:border-[var(--color-border-strong)] focus:border-[var(--color-lime)]/50 focus:ring-2 focus:ring-[var(--color-lime)]/15"
           />
@@ -893,7 +975,7 @@ export default function UlasimHesaplayici() {
           </span>
           <input
             value={companyName}
-            onChange={(e) => setCompanyName(e.target.value)}
+            onChange={(e) => editCompanyName(e.target.value)}
             placeholder="Şirket adı"
             className="peer w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 pb-2.5 pt-5 text-[14px] outline-none transition placeholder:text-[var(--color-fg-dim)]/60 hover:border-[var(--color-border-strong)] focus:border-[var(--color-lime)]/50 focus:ring-2 focus:ring-[var(--color-lime)]/15"
           />
