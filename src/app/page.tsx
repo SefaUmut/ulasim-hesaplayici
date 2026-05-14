@@ -360,7 +360,11 @@ export default function UlasimHesaplayici() {
   const submitAuth = async () => {
     const email = process.env.NEXT_PUBLIC_AUTH_EMAIL || "";
     const password = authPassword;
-    if (!email || !password) return;
+    if (!password) return;
+    if (!email) {
+      setAuthMsg("Hata: yapılandırma eksik (auth email tanımlı değil).");
+      return;
+    }
     setAuthSending(true);
     setAuthMsg(null);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
