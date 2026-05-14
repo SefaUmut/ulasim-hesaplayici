@@ -107,6 +107,8 @@ export default function UlasimHesaplayici() {
   const [authPassword, setAuthPassword] = useState("");
   const [authSending, setAuthSending] = useState(false);
   const [authMsg, setAuthMsg] = useState<string | null>(null);
+  const [recoveryMode, setRecoveryMode] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
   const [syncState, setSyncState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const shapeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const monthTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -255,7 +257,10 @@ export default function UlasimHesaplayici() {
       setAuthChecked(true);
       if (!data.session) setHydrated(true); // modal otomatik açılır, app gizli
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      setSession(s);
+      if (event === "PASSWORD_RECOVERY") setRecoveryMode(true);
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -875,7 +880,76 @@ export default function UlasimHesaplayici() {
         <span className="font-display italic text-[var(--color-fg-muted)]">fin.</span>
       </footer>
 
-      {authChecked && !session && (
+      {recoveryMode && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4 backdrop-blur-md"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="relative w-full max-w-md overflow-hidden rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface)] p-8 shadow-2xl">
+            <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--color-fg-dim)]">
+              Şifre sıfırlama
+            </p>
+            <h3 className="mt-2 font-display text-[36px] leading-none tracking-tight">
+              Yeni <span className="italic text-[var(--color-lime)]">anahtar</span>
+            </h3>
+            <p className="mt-4 text-[13.5px] leading-relaxed text-[var(--color-fg-muted)]">
+              Yeni anahtarını belirle ve devam et.
+            </p>
+
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (newPassword.length < 6) return;
+                setAuthSending(true);
+                const { error } = await supabase.auth.updateUser({ password: newPassword });
+                setAuthSending(false);
+                if (error) {
+                  setAuthMsg(`Hata: ${error.message}`);
+                  return;
+                }
+                setNewPassword("");
+                setAuthMsg(null);
+                setRecoveryMode(false);
+                window.history.replaceState(null, "", window.location.pathname);
+              }}
+              className="mt-6 space-y-3"
+            >
+              <label className="relative block">
+                <span className="pointer-events-none absolute left-4 top-1.5 font-mono text-[9px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
+                  Yeni anahtar
+                </span>
+                <input
+                  type="password"
+                  required
+                  autoFocus
+                  minLength={6}
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="en az 6 karakter"
+                  className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-2)] px-4 pb-3 pt-6 text-[14px] outline-none transition placeholder:text-[var(--color-fg-dim)]/60 hover:border-[var(--color-border-strong)] focus:border-[var(--color-lime)]/50 focus:ring-2 focus:ring-[var(--color-lime)]/15"
+                />
+              </label>
+              <button
+                type="submit"
+                disabled={authSending}
+                className="relative w-full overflow-hidden rounded-xl bg-[var(--color-lime)] py-3.5 text-[14px] font-medium text-[#0a0a0c] shadow-[0_0_0_1px_rgba(214,255,61,0.25),0_10px_40px_-10px_rgba(214,255,61,0.4)] transition hover:shadow-[0_0_0_1px_rgba(214,255,61,0.45),0_10px_50px_-8px_rgba(214,255,61,0.55)] disabled:opacity-50"
+              >
+                {authSending ? "Güncelleniyor…" : "Anahtarı kaydet →"}
+              </button>
+            </form>
+
+            {authMsg && (
+              <p className="mt-4 rounded-xl border border-[var(--color-rose)]/30 bg-[var(--color-rose)]/10 p-3 text-[12.5px] text-[var(--color-rose)]">
+                {authMsg}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {authChecked && !session && !recoveryMode && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md"
           role="dialog"
