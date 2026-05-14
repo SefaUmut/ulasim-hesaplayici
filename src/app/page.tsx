@@ -97,6 +97,34 @@ const buildStandardTemplate = (): Profile => ({
 
 const defaultStandard: Profile = buildStandardTemplate();
 
+// Hazır müşteri güzergahları — dropdown'dan seçilince yeni profil olarak eklenir.
+type PresetLeg = { vIdx: number; label: string; isTransfer: boolean };
+type CustomerPreset = { key: string; name: string; days: number; going: PresetLeg[]; returning: PresetLeg[] };
+const CUSTOMER_PRESETS: CustomerPreset[] = [
+  {
+    key: "cts",
+    name: "CTS",
+    days: 1,
+    going: [
+      { vIdx: 0, label: "62 / 62G", isTransfer: false },
+      { vIdx: 6, label: "Metrobüs 16–21 durak", isTransfer: false },
+      { vIdx: 0, label: "73Y", isTransfer: true },
+    ],
+    returning: [
+      { vIdx: 0, label: "73Y82", isTransfer: false },
+      { vIdx: 6, label: "Metrobüs 16–21 durak", isTransfer: false },
+      { vIdx: 0, label: "62G", isTransfer: true },
+    ],
+  },
+];
+
+const buildFromPreset = (p: CustomerPreset): Profile => ({
+  name: p.name,
+  days: p.days,
+  going: p.going.map((l) => ({ id: uid++, vIdx: l.vIdx, label: l.label, isTransfer: l.isTransfer })),
+  returning: p.returning.map((l) => ({ id: uid++, vIdx: l.vIdx, label: l.label, isTransfer: l.isTransfer })),
+});
+
 export default function UlasimHesaplayici() {
   const [profiles, setProfiles] = useState<Profile[]>([defaultStandard]);
   const [totalWorkdays, setTotalWorkdays] = useState(22);
@@ -446,6 +474,12 @@ export default function UlasimHesaplayici() {
       ...p,
       { name: `Güzergah ${p.length + 1}`, days: 1, going: [newLeg()], returning: [newLeg()] },
     ]);
+
+  const addPreset = (key: string) => {
+    const preset = CUSTOMER_PRESETS.find((p) => p.key === key);
+    if (!preset) return;
+    setProfiles((p) => [...p, buildFromPreset(preset)]);
+  };
 
   const removeProfile = (pi: number) => setProfiles((p) => p.filter((_, i) => i !== pi));
 
@@ -822,15 +856,18 @@ export default function UlasimHesaplayici() {
             />
           ))}
         </ul>
-        <button
-          onClick={addProfile}
-          className="group mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--color-border)] bg-gradient-to-b from-transparent to-white/[0.01] py-3 text-[13px] text-[var(--color-fg-muted)] transition-all hover:border-[var(--color-lime)]/40 hover:bg-[var(--color-lime-soft)] hover:text-[var(--color-lime)]"
-        >
-          <span className="grid size-5 place-items-center rounded-full border border-current text-[11px] transition group-hover:bg-[var(--color-lime)]/15">
-            +
-          </span>
-          Güzergah ekle
-        </button>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+          <button
+            onClick={addProfile}
+            className="group inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--color-border)] bg-gradient-to-b from-transparent to-white/[0.01] py-3 text-[13px] text-[var(--color-fg-muted)] transition-all hover:border-[var(--color-lime)]/40 hover:bg-[var(--color-lime-soft)] hover:text-[var(--color-lime)]"
+          >
+            <span className="grid size-5 place-items-center rounded-full border border-current text-[11px] transition group-hover:bg-[var(--color-lime)]/15">
+              +
+            </span>
+            Boş güzergah ekle
+          </button>
+          <PresetSelect onPick={addPreset} />
+        </div>
       </section>
 
       {/* Sender / Company — compact */}
@@ -1537,6 +1574,131 @@ function VehicleSelect({
                     >
                       {fmtTL(opt.price)}
                     </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>,
+        document.body,
+      )}
+    </div>
+  );
+}
+
+function PresetSelect({ onPick }: { onPick: (key: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const popRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open || !wrapRef.current) return;
+    const update = () => {
+      const r = wrapRef.current!.getBoundingClientRect();
+      const minW = Math.min(360, window.innerWidth - 16);
+      const w = Math.min(Math.max(r.width, minW), window.innerWidth - 16);
+      let left = r.left;
+      if (left + w > window.innerWidth - 8) left = window.innerWidth - w - 8;
+      if (left < 8) left = 8;
+      setPos({ top: r.bottom + 6, left, width: w });
+    };
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!wrapRef.current?.contains(t) && !popRef.current?.contains(t)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={wrapRef} className="relative flex-1">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={
+          "group flex w-full items-center gap-3 rounded-xl border border-dashed bg-gradient-to-b from-transparent to-white/[0.01] py-3 pl-4 pr-3 text-left text-[13px] transition " +
+          (open
+            ? "border-[var(--color-lime)]/50 bg-[var(--color-lime-soft)] text-[var(--color-lime)] ring-2 ring-[var(--color-lime)]/15"
+            : "border-[var(--color-border)] text-[var(--color-fg-muted)] hover:border-[var(--color-lime)]/40 hover:bg-[var(--color-lime-soft)] hover:text-[var(--color-lime)]")
+        }
+      >
+        <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-[var(--color-lime-soft)] font-mono text-[12px] text-[var(--color-lime)]">
+          ★
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block font-mono text-[9px] uppercase tracking-[0.25em] text-[var(--color-fg-dim)]">
+            Hazır müşteri
+          </span>
+          <span className="block truncate text-[13px]">Listeden seç…</span>
+        </span>
+        <span className={"shrink-0 text-[var(--color-fg-dim)] transition " + (open ? "rotate-180" : "")}>▾</span>
+      </button>
+
+      {open && pos && typeof document !== "undefined" && createPortal(
+        <div
+          ref={popRef}
+          style={{ position: "fixed", top: pos.top, left: pos.left, width: pos.width }}
+          className="z-[80] max-h-[420px] overflow-auto rounded-2xl border border-[var(--color-border-strong)] bg-[var(--color-surface-2)] p-2 shadow-2xl"
+        >
+          <p className="px-2 pb-1.5 pt-1 font-mono text-[9px] uppercase tracking-[0.25em] text-[var(--color-fg-dim)]">
+            {CUSTOMER_PRESETS.length} müşteri
+          </p>
+          <ul role="listbox" className="space-y-1">
+            {CUSTOMER_PRESETS.map((p) => {
+              const legsCount = p.going.length + p.returning.length;
+              return (
+                <li key={p.key}>
+                  <button
+                    type="button"
+                    role="option"
+                    onClick={() => {
+                      onPick(p.key);
+                      setOpen(false);
+                    }}
+                    className="group/opt flex w-full items-start gap-3 rounded-xl border border-transparent px-2.5 py-2.5 text-left transition hover:border-[var(--color-lime)]/30 hover:bg-[var(--color-lime-soft)]"
+                  >
+                    <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-[var(--color-lime)]/15 font-display text-[15px] italic text-[var(--color-lime)]">
+                      {p.name.slice(0, 2).toUpperCase()}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-baseline gap-2">
+                        <span className="truncate font-display text-[15px] tracking-tight text-[var(--color-fg)]">{p.name}</span>
+                        <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
+                          {p.days} gün
+                        </span>
+                      </span>
+                      <span className="mt-1 flex flex-wrap gap-1.5">
+                        <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-0.5 font-mono text-[10px] text-[var(--color-fg-muted)]">
+                          → {p.going.length}
+                        </span>
+                        <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-0.5 font-mono text-[10px] text-[var(--color-fg-muted)]">
+                          ← {p.returning.length}
+                        </span>
+                        <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-0.5 font-mono text-[10px] text-[var(--color-fg-muted)]">
+                          {legsCount} bacak
+                        </span>
+                      </span>
+                    </span>
+                    <span className="mt-1 shrink-0 text-[var(--color-fg-dim)] transition group-hover/opt:text-[var(--color-lime)]">+</span>
                   </button>
                 </li>
               );
