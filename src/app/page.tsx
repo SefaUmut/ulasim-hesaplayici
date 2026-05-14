@@ -103,8 +103,9 @@ export default function UlasimHesaplayici() {
 
   // Auth & sync state
   const [session, setSession] = useState<Session | null>(null);
-  const [authOpen, setAuthOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
   const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
   const [authSending, setAuthSending] = useState(false);
   const [authMsg, setAuthMsg] = useState<string | null>(null);
   const [syncState, setSyncState] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -252,15 +253,9 @@ export default function UlasimHesaplayici() {
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
-      if (!data.session) {
-        setAuthOpen(true);
-        setHydrated(true); // ready to render defaults
-      }
+      if (!data.session) setHydrated(true); // modal otomatik açılır, app gizli
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
-      setSession(s);
-      if (s) setAuthOpen(false);
-    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -357,19 +352,26 @@ export default function UlasimHesaplayici() {
     })();
   }, [session, hydrated, periodMonth, periodYear]);
 
-  const sendMagicLink = async () => {
-    if (!authEmail.trim()) return;
+  const submitAuth = async () => {
+    const email = authEmail.trim();
+    const password = authPassword;
+    if (!email || !password) return;
     setAuthSending(true);
     setAuthMsg(null);
-    const { error } = await supabase.auth.signInWithOtp({
-      email: authEmail.trim(),
-      options: { emailRedirectTo: typeof window !== "undefined" ? window.location.origin : undefined },
-    });
-    setAuthSending(false);
-    if (error) {
-      setAuthMsg(`Hata: ${error.message}`);
+
+    if (authMode === "signin") {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      setAuthSending(false);
+      if (error) setAuthMsg(`Hata: ${error.message}`);
+      // Başarılıysa onAuthStateChange modali kapatır
     } else {
-      setAuthMsg("✓ E-postanı kontrol et — giriş linki gönderildi.");
+      const { error } = await supabase.auth.signUp({ email, password });
+      setAuthSending(false);
+      if (error) {
+        setAuthMsg(`Hata: ${error.message}`);
+      } else {
+        setAuthMsg("✓ Hesap oluşturuldu — giriş yapıldı.");
+      }
     }
   };
 
@@ -384,7 +386,6 @@ export default function UlasimHesaplayici() {
     const n = new Date();
     setPeriodMonth(n.getMonth());
     setPeriodYear(n.getFullYear());
-    setAuthOpen(true);
   };
 
   const updateProfile = <K extends keyof Profile>(pi: number, key: K, val: Profile[K]) =>
@@ -516,17 +517,12 @@ export default function UlasimHesaplayici() {
     });
 
   return (
-    <main className="mx-auto min-h-dvh max-w-2xl px-4 pb-24 pt-6 sm:px-6 sm:pt-10">
+    <main className="mx-auto min-h-dvh max-w-2xl px-4 pb-24 pt-6 sm:px-6 sm:pt-10 lg:max-w-3xl">
       {/* Header */}
       <header className="mb-8 flex flex-wrap items-end justify-between gap-3">
-        <div className="min-w-0">
-          <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--color-fg-dim)]">
-            İstanbul · 2026
-          </p>
-          <h1 className="mt-1 font-display text-[28px] leading-none tracking-tight sm:text-[34px]">
-            Ulaşım <span className="italic text-[var(--color-lime)]">defteri</span>
-          </h1>
-        </div>
+        <h1 className="font-display text-[28px] leading-none tracking-tight sm:text-[34px]">
+          Ulaşım <span className="italic text-[var(--color-lime)]">defteri</span>
+        </h1>
         {session ? (
           <button
             onClick={signOut}
@@ -551,14 +547,7 @@ export default function UlasimHesaplayici() {
                 : "senkron"}
             </span>
           </button>
-        ) : (
-          <button
-            onClick={() => setAuthOpen(true)}
-            className="chip transition hover:border-[var(--color-lime)]/40 hover:text-[var(--color-lime)]"
-          >
-            ↗ Giriş
-          </button>
-        )}
+        ) : null}
       </header>
 
       {/* Period + Total bar */}
@@ -579,7 +568,7 @@ export default function UlasimHesaplayici() {
                 {MONTHS_TR[periodMonth]}
               </p>
               <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.25em] text-[var(--color-fg-dim)]">
-                {periodYear} dönemi
+                {periodYear}
               </p>
             </div>
             <button
@@ -784,9 +773,6 @@ export default function UlasimHesaplayici() {
             Güzergahlar
           </h2>
           <span className="h-px flex-1 bg-gradient-to-r from-[var(--color-border)] to-transparent" />
-          <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
-            {profiles.length} adet
-          </span>
         </div>
         <ul className="space-y-2">
           {profiles.map((p, pi) => (
@@ -796,7 +782,6 @@ export default function UlasimHesaplayici() {
               pi={pi}
               isOpen={expanded.has(pi)}
               canRemove={profiles.length > 1}
-              dayCost={legsTotal(p.going) + legsTotal(p.returning)}
               monthCost={profileMon(p)}
               legsTotalGoing={legsTotal(p.going)}
               legsTotalReturning={legsTotal(p.returning)}
@@ -862,13 +847,24 @@ export default function UlasimHesaplayici() {
                 copyText();
               }}
               className={
-                "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[12px] font-medium transition-all " +
+                "grid size-8 place-items-center rounded-full transition-all " +
                 (copied
                   ? "bg-[var(--color-lime)] text-[#0a0a0c] shadow-[0_0_0_1px_rgba(214,255,61,0.3),0_8px_24px_-8px_rgba(214,255,61,0.5)]"
                   : "bg-[var(--color-fg)] text-[#0a0a0c] hover:bg-[var(--color-lime)] hover:shadow-[0_0_0_1px_rgba(214,255,61,0.3),0_8px_24px_-8px_rgba(214,255,61,0.5)]")
               }
+              title={copied ? "Kopyalandı" : "Kopyala"}
+              aria-label={copied ? "Kopyalandı" : "Kopyala"}
             >
-              {copied ? "✓ kopyalandı" : "kopyala"}
+              {copied ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M20 6 9 17l-5-5" />
+                </svg>
+              ) : (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+              )}
             </button>
           </summary>
           <textarea
@@ -891,45 +887,43 @@ export default function UlasimHesaplayici() {
         <span className="font-display italic text-[var(--color-fg-muted)]">fin.</span>
       </footer>
 
-      {authOpen && !session && (
+      {!session && (
         <div
-          onClick={() => setAuthOpen(false)}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md"
           role="dialog"
           aria-modal="true"
         >
           <div
-            onClick={(e) => e.stopPropagation()}
             className="relative w-full max-w-md overflow-hidden rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface)] p-8 shadow-2xl"
           >
             <div className="pointer-events-none absolute -right-24 -top-24 size-[320px] rounded-full bg-[var(--color-lime)] opacity-[0.10] blur-3xl" />
             <div className="pointer-events-none absolute -bottom-24 -left-24 size-[260px] rounded-full bg-[var(--color-violet)] opacity-[0.12] blur-3xl" />
-
-            <button
-              onClick={() => setAuthOpen(false)}
-              className="absolute right-4 top-4 grid size-8 place-items-center rounded-full text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-fg)]"
-              aria-label="Kapat"
-            >
-              ✕
-            </button>
 
             <div className="relative">
               <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--color-fg-dim)]">
                 Bulut senkron
               </p>
               <h3 className="mt-2 font-display text-[36px] leading-none tracking-tight">
-                E-posta ile{" "}
-                <span className="italic text-[var(--color-lime)]">giriş</span>
+                {authMode === "signin" ? (
+                  <>
+                    Tekrar <span className="italic text-[var(--color-lime)]">hoş geldin</span>
+                  </>
+                ) : (
+                  <>
+                    Yeni <span className="italic text-[var(--color-lime)]">hesap</span>
+                  </>
+                )}
               </h3>
               <p className="mt-4 text-[13.5px] leading-relaxed text-[var(--color-fg-muted)]">
-                E-postanı yaz, sihirli giriş linki gönderelim. Şifre yok.
-                Verilerin bulutta sadece sana ait alanda tutulur.
+                {authMode === "signin"
+                  ? "E-postan ve şifrenle gir. Verilerin bulutta sadece sana ait alanda tutulur, cihazlar arasında senkron olur."
+                  : "Bir e-posta + şifre belirle. Mail kodu gerekmez, anında giriş yaparsın."}
               </p>
 
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  sendMagicLink();
+                  submitAuth();
                 }}
                 className="mt-6 space-y-3"
               >
@@ -941,19 +935,43 @@ export default function UlasimHesaplayici() {
                     type="email"
                     required
                     autoFocus
+                    autoComplete="email"
                     value={authEmail}
                     onChange={(e) => setAuthEmail(e.target.value)}
                     placeholder="ornek@mail.com"
                     className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-2)] px-4 pb-3 pt-6 text-[14px] outline-none transition placeholder:text-[var(--color-fg-dim)]/60 hover:border-[var(--color-border-strong)] focus:border-[var(--color-lime)]/50 focus:ring-2 focus:ring-[var(--color-lime)]/15"
                   />
                 </label>
+
+                <label className="relative block">
+                  <span className="pointer-events-none absolute left-4 top-1.5 font-mono text-[9px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
+                    Şifre
+                  </span>
+                  <input
+                    type="password"
+                    required
+                    minLength={6}
+                    autoComplete={authMode === "signin" ? "current-password" : "new-password"}
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    placeholder={authMode === "signup" ? "en az 6 karakter" : "••••••••"}
+                    className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-2)] px-4 pb-3 pt-6 text-[14px] outline-none transition placeholder:text-[var(--color-fg-dim)]/60 hover:border-[var(--color-border-strong)] focus:border-[var(--color-lime)]/50 focus:ring-2 focus:ring-[var(--color-lime)]/15"
+                  />
+                </label>
+
                 <button
                   type="submit"
                   disabled={authSending}
                   className="group/btn relative w-full overflow-hidden rounded-xl bg-[var(--color-lime)] py-3.5 text-[14px] font-medium text-[#0a0a0c] shadow-[0_0_0_1px_rgba(214,255,61,0.25),0_10px_40px_-10px_rgba(214,255,61,0.4)] transition hover:shadow-[0_0_0_1px_rgba(214,255,61,0.45),0_10px_50px_-8px_rgba(214,255,61,0.55)] disabled:opacity-50"
                 >
                   <span className="relative inline-flex items-center gap-2">
-                    {authSending ? "Gönderiliyor…" : "Giriş linki gönder"}
+                    {authSending
+                      ? authMode === "signin"
+                        ? "Giriş yapılıyor…"
+                        : "Hesap oluşturuluyor…"
+                      : authMode === "signin"
+                      ? "Giriş yap"
+                      : "Hesap oluştur"}
                     {!authSending && <span>→</span>}
                   </span>
                 </button>
@@ -971,6 +989,21 @@ export default function UlasimHesaplayici() {
                   {authMsg}
                 </p>
               )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode((m) => (m === "signin" ? "signup" : "signin"));
+                  setAuthMsg(null);
+                }}
+                className="mt-5 w-full text-center text-[12.5px] text-[var(--color-fg-muted)] transition hover:text-[var(--color-lime)]"
+              >
+                {authMode === "signin" ? (
+                  <>Hesabın yok mu? <span className="underline underline-offset-2">Kayıt ol</span></>
+                ) : (
+                  <>Zaten hesabın var mı? <span className="underline underline-offset-2">Giriş yap</span></>
+                )}
+              </button>
             </div>
           </div>
         </div>
@@ -1028,7 +1061,6 @@ function ProfileRow({
   pi,
   isOpen,
   canRemove,
-  dayCost,
   monthCost,
   legsTotalGoing,
   legsTotalReturning,
@@ -1044,7 +1076,6 @@ function ProfileRow({
   pi: number;
   isOpen: boolean;
   canRemove: boolean;
-  dayCost: number;
   monthCost: number;
   legsTotalGoing: number;
   legsTotalReturning: number;
@@ -1130,10 +1161,6 @@ function ProfileRow({
           </button>
         </div>
 
-        <span className="hidden w-20 text-right font-mono text-[12px] tabular-nums text-[var(--color-fg-dim)] sm:inline">
-          {fmtTL(dayCost)}/g
-        </span>
-
         <span className="w-20 text-right font-mono text-[13px] font-medium tabular-nums text-[var(--color-fg)] sm:w-24">
           {fmtTL(monthCost)}
         </span>
@@ -1141,10 +1168,14 @@ function ProfileRow({
         <div className="flex items-center gap-0.5">
           <button
             onClick={() => duplicateProfile(pi)}
-            className="inline-flex h-7 items-center rounded-md px-2 font-mono text-[10px] uppercase tracking-[0.15em] text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-lime)]"
-            title="Bu güzergahı kopyala"
+            className="grid size-7 place-items-center rounded-md text-[var(--color-fg-muted)] transition hover:bg-white/5 hover:text-[var(--color-lime)]"
+            title="Kopyala"
+            aria-label="Kopyala"
           >
-            kopyala
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
           </button>
           {canRemove && (
             <button
@@ -1213,8 +1244,8 @@ function TripBlock({
           <span className="text-sm font-medium tracking-tight">
             {dir === "going" ? "Gidiş" : "Dönüş"}
           </span>
-          <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
-            {legs.length} araç
+          <span className="text-[13px] text-[var(--color-fg-muted)]">
+            · {legs.length} araç
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -1223,9 +1254,10 @@ function TripBlock({
           </span>
           <button
             onClick={onAdd}
-            className="rounded-full border border-[var(--color-border)] bg-white/[0.03] px-3 py-1 font-mono text-[11px] text-[var(--color-fg-muted)] transition hover:border-[var(--color-lime)]/40 hover:bg-[var(--color-lime-soft)] hover:text-[var(--color-lime)]"
+            className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border)] bg-white/[0.03] px-3 py-1.5 text-[12.5px] text-[var(--color-fg-muted)] transition hover:border-[var(--color-lime)]/40 hover:bg-[var(--color-lime-soft)] hover:text-[var(--color-lime)]"
           >
-            + araç
+            <span className="text-[14px] leading-none">+</span>
+            Araç ekle
           </button>
         </div>
       </header>
@@ -1236,7 +1268,7 @@ function TripBlock({
           return legs.map((leg, idx) => (
           <li
             key={leg.id}
-            className="group/leg flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-transparent bg-white/[0.02] p-2 transition hover:border-[var(--color-border)] sm:grid sm:grid-cols-[24px_minmax(0,2.4fr)_minmax(0,0.9fr)_auto_auto_auto] sm:gap-x-3"
+            className="group/leg flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-transparent bg-white/[0.02] p-2 transition hover:border-[var(--color-border)] sm:grid sm:grid-cols-[24px_minmax(220px,3fr)_minmax(0,1fr)_auto_auto_auto] sm:gap-x-3"
           >
             <span className="grid size-7 place-items-center rounded-lg bg-white/5 font-mono text-[10px] tabular-nums text-[var(--color-fg-muted)]">
               {String(idx + 1).padStart(2, "0")}
@@ -1257,13 +1289,30 @@ function TripBlock({
             <button
               onClick={() => onUpdate(leg.id, "isTransfer", !leg.isTransfer)}
               className={
-                "shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-[11px] font-medium transition " +
+                "group/tr inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1.5 text-[12px] font-medium transition-all " +
                 (leg.isTransfer
-                  ? "bg-[var(--color-lime-soft)] text-[var(--color-lime)] ring-1 ring-[var(--color-lime)]/30"
-                  : "bg-white/5 text-[var(--color-fg-muted)] hover:bg-white/10 hover:text-[var(--color-fg)]")
+                  ? "border-[var(--color-lime)]/40 bg-[var(--color-lime-soft)] text-[var(--color-lime)] shadow-[0_0_0_3px_rgba(214,255,61,0.06)]"
+                  : "border-[var(--color-border)] bg-white/[0.02] text-[var(--color-fg-muted)] hover:border-[var(--color-border-strong)] hover:bg-white/[0.05] hover:text-[var(--color-fg)]")
+              }
+              title={
+                leg.isTransfer
+                  ? "Aktarma indirimi uygulanıyor — kapatmak için tıkla"
+                  : "Aktarma indirimini uygulamak için tıkla"
               }
             >
-              {leg.isTransfer ? "✶ aktarmalı" : "aktarmasız"}
+              {leg.isTransfer ? (
+                <>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M7 4v16M7 4 3 8M7 4l4 4M17 20V4M17 20l-4-4M17 20l4-4" />
+                  </svg>
+                  aktarmalı
+                </>
+              ) : (
+                <>
+                  <span className="size-1.5 rounded-full bg-current opacity-50" aria-hidden="true" />
+                  aktarmasız
+                </>
+              )}
             </button>
 
             <span
@@ -1338,7 +1387,7 @@ function VehicleSelect({
         <span className="grid size-6 shrink-0 place-items-center rounded-md bg-[var(--color-lime-soft)] font-mono text-[11px] text-[var(--color-lime)]">
           {v.icon}
         </span>
-        <span className="min-w-0 flex-1 truncate">{v.label}</span>
+        <span className="min-w-0 flex-1 truncate sm:whitespace-nowrap sm:[overflow:visible]">{v.label}</span>
         <span className="shrink-0 font-mono text-[11px] tabular-nums text-[var(--color-fg-muted)]">
           {fmtTL(v.price)}
         </span>
@@ -1353,7 +1402,7 @@ function VehicleSelect({
       </button>
 
       {open && (
-        <div className="absolute left-0 top-[calc(100%+4px)] z-30 max-h-[320px] w-[min(360px,calc(100vw-2rem))] overflow-auto rounded-xl border border-[var(--color-border-strong)] bg-[var(--color-surface-2)] p-1 shadow-2xl">
+        <div className="absolute left-0 top-[calc(100%+4px)] z-30 max-h-[360px] w-[min(420px,calc(100vw-2rem))] overflow-auto rounded-xl border border-[var(--color-border-strong)] bg-[var(--color-surface-2)] p-1 shadow-2xl">
           <ul role="listbox">
             {VEHICLES.map((opt, i) => {
               if (opt.aktarma) return null; // dropdown'da gizli
