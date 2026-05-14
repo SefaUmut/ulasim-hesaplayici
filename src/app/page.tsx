@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { supabase } from "@/lib/supabase";
 import type { Session } from "@supabase/supabase-js";
 
@@ -15,9 +16,10 @@ const AKTARMA_PRICES = [31.27, 24.02, 15.62, 15.62, 15.62];
 //   • Marmaray / Vapur de kendi fiyatından ödenir, sayaç etkilenmez.
 function computeLegPrices(legs: { vIdx: number; isTransfer: boolean }[]): number[] {
   let aktarmaCount = 0;
-  return legs.map((l) => {
+  return legs.map((l, idx) => {
     const v = VEHICLES[l.vIdx];
     const eligibleForAktarma =
+      idx > 0 &&
       !v.label.startsWith("Metrobüs") &&
       !v.label.startsWith("Marmaray") &&
       !v.label.startsWith("Vapur");
@@ -1329,34 +1331,45 @@ function TripBlock({
               className="min-w-0 flex-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 font-mono text-[12px] text-[var(--color-fg-muted)] outline-none transition placeholder:text-[var(--color-fg-dim)]/60 hover:border-[var(--color-border-strong)] focus:border-[var(--color-lime)]/50 focus:text-[var(--color-fg)] focus:ring-2 focus:ring-[var(--color-lime)]/15"
             />
 
-            <button
-              onClick={() => onUpdate(leg.id, "isTransfer", !leg.isTransfer)}
-              className={
-                "group/tr inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1.5 text-[12px] font-medium transition-all " +
-                (leg.isTransfer
-                  ? "border-[var(--color-lime)]/40 bg-[var(--color-lime-soft)] text-[var(--color-lime)] shadow-[0_0_0_3px_rgba(214,255,61,0.06)]"
-                  : "border-[var(--color-border)] bg-white/[0.02] text-[var(--color-fg-muted)] hover:border-[var(--color-border-strong)] hover:bg-white/[0.05] hover:text-[var(--color-fg)]")
-              }
-              title={
-                leg.isTransfer
-                  ? "Aktarma indirimi uygulanıyor — kapatmak için tıkla"
-                  : "Aktarma indirimini uygulamak için tıkla"
-              }
-            >
-              {leg.isTransfer ? (
-                <>
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="M7 4v16M7 4 3 8M7 4l4 4M17 20V4M17 20l-4-4M17 20l4-4" />
-                  </svg>
-                  aktarmalı
-                </>
-              ) : (
-                <>
-                  <span className="size-1.5 rounded-full bg-current opacity-50" aria-hidden="true" />
-                  aktarmasız
-                </>
-              )}
-            </button>
+            {(() => {
+              if (idx === 0) return null;
+              const vLabel = VEHICLES[leg.vIdx]?.label || "";
+              const transferApplicable =
+                !vLabel.startsWith("Metrobüs") &&
+                !vLabel.startsWith("Marmaray") &&
+                !vLabel.startsWith("Vapur");
+              if (!transferApplicable) return null;
+              return (
+                <button
+                  onClick={() => onUpdate(leg.id, "isTransfer", !leg.isTransfer)}
+                  className={
+                    "group/tr inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1.5 text-[12px] font-medium transition-all " +
+                    (leg.isTransfer
+                      ? "border-[var(--color-lime)]/40 bg-[var(--color-lime-soft)] text-[var(--color-lime)] shadow-[0_0_0_3px_rgba(214,255,61,0.06)]"
+                      : "border-[var(--color-border)] bg-white/[0.02] text-[var(--color-fg-muted)] hover:border-[var(--color-border-strong)] hover:bg-white/[0.05] hover:text-[var(--color-fg)]")
+                  }
+                  title={
+                    leg.isTransfer
+                      ? "Aktarma indirimi uygulanıyor — kapatmak için tıkla"
+                      : "Aktarma indirimini uygulamak için tıkla"
+                  }
+                >
+                  {leg.isTransfer ? (
+                    <>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M7 4v16M7 4 3 8M7 4l4 4M17 20V4M17 20l-4-4M17 20l4-4" />
+                      </svg>
+                      aktarmalı
+                    </>
+                  ) : (
+                    <>
+                      <span className="size-1.5 rounded-full bg-current opacity-50" aria-hidden="true" />
+                      aktarmasız
+                    </>
+                  )}
+                </button>
+              );
+            })()}
 
             <span
               className={
@@ -1394,12 +1407,35 @@ function VehicleSelect({
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const popRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const v = VEHICLES[value];
+
+  useLayoutEffect(() => {
+    if (!open || !wrapRef.current) return;
+    const update = () => {
+      const r = wrapRef.current!.getBoundingClientRect();
+      const minW = Math.min(320, window.innerWidth - 16);
+      const w = Math.min(Math.max(r.width, minW), window.innerWidth - 16);
+      let left = r.left;
+      if (left + w > window.innerWidth - 8) left = window.innerWidth - w - 8;
+      if (left < 8) left = 8;
+      setPos({ top: r.bottom + 4, left, width: w });
+    };
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (!wrapRef.current?.contains(t) && !popRef.current?.contains(t)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
@@ -1444,8 +1480,12 @@ function VehicleSelect({
         </span>
       </button>
 
-      {open && (
-        <div className="absolute left-0 top-[calc(100%+4px)] z-30 max-h-[360px] w-[min(420px,calc(100vw-2rem))] overflow-auto rounded-xl border border-[var(--color-border-strong)] bg-[var(--color-surface-2)] p-1 shadow-2xl">
+      {open && pos && typeof document !== "undefined" && createPortal(
+        <div
+          ref={popRef}
+          style={{ position: "fixed", top: pos.top, left: pos.left, width: pos.width }}
+          className="z-[80] max-h-[360px] overflow-auto rounded-xl border border-[var(--color-border-strong)] bg-[var(--color-surface-2)] p-1 shadow-2xl"
+        >
           <ul role="listbox">
             {VEHICLES.map((opt, i) => {
               if (opt.aktarma) return null; // dropdown'da gizli
@@ -1461,7 +1501,7 @@ function VehicleSelect({
                       setOpen(false);
                     }}
                     className={
-                      "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition " +
+                      "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] leading-tight transition " +
                       (selected
                         ? "bg-[var(--color-lime-soft)] text-[var(--color-lime)]"
                         : "text-[var(--color-fg)] hover:bg-white/5")
@@ -1477,7 +1517,7 @@ function VehicleSelect({
                     >
                       {opt.icon}
                     </span>
-                    <span className="flex-1 whitespace-nowrap">{opt.label}</span>
+                    <span className="min-w-0 flex-1 break-words py-0.5">{opt.label}</span>
                     <span
                       className={
                         "shrink-0 font-mono text-[11px] tabular-nums " +
@@ -1491,7 +1531,8 @@ function VehicleSelect({
               );
             })}
           </ul>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
