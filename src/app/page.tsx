@@ -103,8 +103,7 @@ export default function UlasimHesaplayici() {
 
   // Auth & sync state
   const [session, setSession] = useState<Session | null>(null);
-  const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
-  const [authEmail, setAuthEmail] = useState("");
+  const [authChecked, setAuthChecked] = useState(false);
   const [authPassword, setAuthPassword] = useState("");
   const [authSending, setAuthSending] = useState(false);
   const [authMsg, setAuthMsg] = useState<string | null>(null);
@@ -253,6 +252,7 @@ export default function UlasimHesaplayici() {
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
+      setAuthChecked(true);
       if (!data.session) setHydrated(true); // modal otomatik açılır, app gizli
     });
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
@@ -353,26 +353,14 @@ export default function UlasimHesaplayici() {
   }, [session, hydrated, periodMonth, periodYear]);
 
   const submitAuth = async () => {
-    const email = authEmail.trim();
+    const email = process.env.NEXT_PUBLIC_AUTH_EMAIL || "";
     const password = authPassword;
     if (!email || !password) return;
     setAuthSending(true);
     setAuthMsg(null);
-
-    if (authMode === "signin") {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      setAuthSending(false);
-      if (error) setAuthMsg(`Hata: ${error.message}`);
-      // Başarılıysa onAuthStateChange modali kapatır
-    } else {
-      const { error } = await supabase.auth.signUp({ email, password });
-      setAuthSending(false);
-      if (error) {
-        setAuthMsg(`Hata: ${error.message}`);
-      } else {
-        setAuthMsg("✓ Hesap oluşturuldu — giriş yapıldı.");
-      }
-    }
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setAuthSending(false);
+    if (error) setAuthMsg(`Hata: ${error.message}`);
   };
 
   const signOut = async () => {
@@ -887,7 +875,7 @@ export default function UlasimHesaplayici() {
         <span className="font-display italic text-[var(--color-fg-muted)]">fin.</span>
       </footer>
 
-      {!session && (
+      {authChecked && !session && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md"
           role="dialog"
@@ -904,20 +892,10 @@ export default function UlasimHesaplayici() {
                 Bulut senkron
               </p>
               <h3 className="mt-2 font-display text-[36px] leading-none tracking-tight">
-                {authMode === "signin" ? (
-                  <>
-                    Tekrar <span className="italic text-[var(--color-lime)]">hoş geldin</span>
-                  </>
-                ) : (
-                  <>
-                    Yeni <span className="italic text-[var(--color-lime)]">hesap</span>
-                  </>
-                )}
+                Tekrar <span className="italic text-[var(--color-lime)]">hoş geldin</span>
               </h3>
               <p className="mt-4 text-[13.5px] leading-relaxed text-[var(--color-fg-muted)]">
-                {authMode === "signin"
-                  ? "E-postan ve şifrenle gir. Verilerin bulutta sadece sana ait alanda tutulur, cihazlar arasında senkron olur."
-                  : "Bir e-posta + şifre belirle. Mail kodu gerekmez, anında giriş yaparsın."}
+                Anahtarını gir, devam et.
               </p>
 
               <form
@@ -929,32 +907,17 @@ export default function UlasimHesaplayici() {
               >
                 <label className="relative block">
                   <span className="pointer-events-none absolute left-4 top-1.5 font-mono text-[9px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
-                    E-posta
-                  </span>
-                  <input
-                    type="email"
-                    required
-                    autoFocus
-                    autoComplete="email"
-                    value={authEmail}
-                    onChange={(e) => setAuthEmail(e.target.value)}
-                    placeholder="ornek@mail.com"
-                    className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-2)] px-4 pb-3 pt-6 text-[14px] outline-none transition placeholder:text-[var(--color-fg-dim)]/60 hover:border-[var(--color-border-strong)] focus:border-[var(--color-lime)]/50 focus:ring-2 focus:ring-[var(--color-lime)]/15"
-                  />
-                </label>
-
-                <label className="relative block">
-                  <span className="pointer-events-none absolute left-4 top-1.5 font-mono text-[9px] uppercase tracking-[0.2em] text-[var(--color-fg-dim)]">
-                    Şifre
+                    Anahtar
                   </span>
                   <input
                     type="password"
                     required
+                    autoFocus
                     minLength={6}
-                    autoComplete={authMode === "signin" ? "current-password" : "new-password"}
+                    autoComplete="current-password"
                     value={authPassword}
                     onChange={(e) => setAuthPassword(e.target.value)}
-                    placeholder={authMode === "signup" ? "en az 6 karakter" : "••••••••"}
+                    placeholder="••••••••"
                     className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-2)] px-4 pb-3 pt-6 text-[14px] outline-none transition placeholder:text-[var(--color-fg-dim)]/60 hover:border-[var(--color-border-strong)] focus:border-[var(--color-lime)]/50 focus:ring-2 focus:ring-[var(--color-lime)]/15"
                   />
                 </label>
@@ -965,13 +928,7 @@ export default function UlasimHesaplayici() {
                   className="group/btn relative w-full overflow-hidden rounded-xl bg-[var(--color-lime)] py-3.5 text-[14px] font-medium text-[#0a0a0c] shadow-[0_0_0_1px_rgba(214,255,61,0.25),0_10px_40px_-10px_rgba(214,255,61,0.4)] transition hover:shadow-[0_0_0_1px_rgba(214,255,61,0.45),0_10px_50px_-8px_rgba(214,255,61,0.55)] disabled:opacity-50"
                 >
                   <span className="relative inline-flex items-center gap-2">
-                    {authSending
-                      ? authMode === "signin"
-                        ? "Giriş yapılıyor…"
-                        : "Hesap oluşturuluyor…"
-                      : authMode === "signin"
-                      ? "Giriş yap"
-                      : "Hesap oluştur"}
+                    {authSending ? "Giriş yapılıyor…" : "Giriş yap"}
                     {!authSending && <span>→</span>}
                   </span>
                 </button>
@@ -989,21 +946,6 @@ export default function UlasimHesaplayici() {
                   {authMsg}
                 </p>
               )}
-
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthMode((m) => (m === "signin" ? "signup" : "signin"));
-                  setAuthMsg(null);
-                }}
-                className="mt-5 w-full text-center text-[12.5px] text-[var(--color-fg-muted)] transition hover:text-[var(--color-lime)]"
-              >
-                {authMode === "signin" ? (
-                  <>Hesabın yok mu? <span className="underline underline-offset-2">Kayıt ol</span></>
-                ) : (
-                  <>Zaten hesabın var mı? <span className="underline underline-offset-2">Giriş yap</span></>
-                )}
-              </button>
             </div>
           </div>
         </div>
