@@ -40,16 +40,17 @@ const MONTHS_TR = [
 
 const VEHICLES = [
   { label: "Otobüs / Metro / Tramvay", short: "Otobüs · Metro · Tramvay", icon: "◆", price: 42.0 },
-  { label: "Metrobüs · 1 durak", short: "Metrobüs 1", icon: "▶", price: 30.07 },
-  { label: "Metrobüs · 2 durak", short: "Metrobüs 2", icon: "▶", price: 35.97 },
-  { label: "Metrobüs · 3 durak", short: "Metrobüs 3", icon: "▶", price: 42.0 },
-  { label: "Metrobüs · 4–9 durak", short: "Metrobüs 4–9", icon: "▶▶", price: 48.01 },
-  { label: "Metrobüs · 10–15 durak", short: "Metrobüs 10–15", icon: "▶▶", price: 52.73 },
-  { label: "Metrobüs · 16–21 durak", short: "Metrobüs 16–21", icon: "▶▶", price: 55.17 },
-  { label: "Metrobüs · 22–27 durak", short: "Metrobüs 22–27", icon: "▶▶", price: 56.97 },
-  { label: "Metrobüs · 28–33 durak", short: "Metrobüs 28–33", icon: "▶▶▶", price: 58.87 },
-  { label: "Metrobüs · 34–43+ durak", short: "Metrobüs 34+", icon: "▶▶▶", price: 62.35 },
-  { label: "Marmaray · 1–7 durak", short: "Marmaray 1–7", icon: "═", price: 34.0 },
+  // Metrobüs durak kademeleri — kullanıcı iade almadığı için dropdown'dan gizli; eski kayıtlar için indeksler korunuyor.
+  { label: "Metrobüs · 1 durak", short: "Metrobüs 1", icon: "▶", price: 30.07, hidden: true },
+  { label: "Metrobüs · 2 durak", short: "Metrobüs 2", icon: "▶", price: 35.97, hidden: true },
+  { label: "Metrobüs · 3 durak", short: "Metrobüs 3", icon: "▶", price: 42.0, hidden: true },
+  { label: "Metrobüs · 4–9 durak", short: "Metrobüs 4–9", icon: "▶▶", price: 48.01, hidden: true },
+  { label: "Metrobüs · 10–15 durak", short: "Metrobüs 10–15", icon: "▶▶", price: 52.73, hidden: true },
+  { label: "Metrobüs · 16–21 durak", short: "Metrobüs 16–21", icon: "▶▶", price: 55.17, hidden: true },
+  { label: "Metrobüs · 22–27 durak", short: "Metrobüs 22–27", icon: "▶▶", price: 56.97, hidden: true },
+  { label: "Metrobüs · 28–33 durak", short: "Metrobüs 28–33", icon: "▶▶▶", price: 58.87, hidden: true },
+  { label: "Metrobüs", short: "Metrobüs", icon: "▶▶▶", price: 62.35 },
+  { label: "Marmaray · 1–7 durak", short: "Marmaray 1–7", icon: "═", price: 34.0, hidden: true },
   { label: "Vapur — Kadıköy / Eminönü", short: "Vapur", icon: "≈", price: 59.28 },
   // Manuel aktarma kalemleri — dropdown'dan gizli, sadece eski data ile uyumluluk için tutuluyor.
   { label: "1. aktarma indirimi", short: "1. aktarma", icon: "↻", price: 31.27, aktarma: true },
@@ -57,12 +58,12 @@ const VEHICLES = [
   { label: "3. aktarma indirimi", short: "3. aktarma", icon: "↻↻↻", price: 15.62, aktarma: true },
   { label: "4. aktarma indirimi", short: "4. aktarma", icon: "↻↻↻", price: 15.62, aktarma: true },
   { label: "5. aktarma indirimi", short: "5. aktarma", icon: "↻↻↻", price: 15.62, aktarma: true },
-  // Marmaray ek mesafe kademeleri — sondaki konumları, mevcut kayıtlı vIdx'leri bozmamak için.
-  { label: "Marmaray · 8–14 durak", short: "Marmaray 8–14", icon: "══", price: 43.4 },
-  { label: "Marmaray · 15–21 durak", short: "Marmaray 15–21", icon: "══", price: 50.1 },
-  { label: "Marmaray · 22–28 durak", short: "Marmaray 22–28", icon: "═══", price: 57.78 },
-  { label: "Marmaray · 29–35 durak", short: "Marmaray 29–35", icon: "═══", price: 67.49 },
-  { label: "Marmaray · 36–43 durak", short: "Marmaray 36–43", icon: "═══", price: 74.7 },
+  // Marmaray kademeleri — iade alınmadığı için dropdown'da tek görünür opsiyon var; diğerleri eski kayıtlar için tutuluyor.
+  { label: "Marmaray · 8–14 durak", short: "Marmaray 8–14", icon: "══", price: 43.4, hidden: true },
+  { label: "Marmaray · 15–21 durak", short: "Marmaray 15–21", icon: "══", price: 50.1, hidden: true },
+  { label: "Marmaray · 22–28 durak", short: "Marmaray 22–28", icon: "═══", price: 57.78, hidden: true },
+  { label: "Marmaray", short: "Marmaray", icon: "═══", price: 67.49 },
+  { label: "Marmaray · 36–43 durak", short: "Marmaray 36–43", icon: "═══", price: 74.7, hidden: true },
 ];
 
 const fmt = (n: number) =>
@@ -84,13 +85,13 @@ const buildStandardTemplate = (): Profile => ({
   days: STANDARD_WORKDAYS,
   going: [
     { id: uid++, vIdx: 0, label: "62 / 62G", isTransfer: false },
-    { id: uid++, vIdx: 4, label: "34AS / 34GG", isTransfer: true },
+    { id: uid++, vIdx: 9, label: "Metrobüs (Zincirlikuyu — Uzunçayır)", isTransfer: true },
     { id: uid++, vIdx: 0, label: "M4 Metro", isTransfer: true },
     { id: uid++, vIdx: 0, label: "14BK / 20E / 20Ü", isTransfer: true },
   ],
   returning: [
     { id: uid++, vIdx: 0, label: "14BK / 20E / 20Ü", isTransfer: false },
-    { id: uid++, vIdx: 4, label: "Metrobüs 5 durak", isTransfer: true },
+    { id: uid++, vIdx: 9, label: "Metrobüs (Zincirlikuyu — Uzunçayır)", isTransfer: true },
     { id: uid++, vIdx: 0, label: "62 / 62G", isTransfer: true },
   ],
 });
@@ -102,18 +103,18 @@ type PresetLeg = { vIdx: number; label: string; isTransfer: boolean };
 type CustomerPreset = { key: string; name: string; days: number; going: PresetLeg[]; returning: PresetLeg[] };
 const CUSTOMER_PRESETS: CustomerPreset[] = [
   {
-    key: "cts",
-    name: "CTS",
+    key: "cetas",
+    name: "CETAS",
     days: 1,
     going: [
-      { vIdx: 0, label: "62 / 62G", isTransfer: false },
-      { vIdx: 6, label: "Metrobüs 16–21 durak", isTransfer: false },
-      { vIdx: 0, label: "73Y", isTransfer: true },
+      { vIdx: 0, label: "M2 Metro", isTransfer: false },
+      { vIdx: 20, label: "Marmaray — Yenikapı", isTransfer: false },
+      { vIdx: 0, label: "M9 Metro", isTransfer: true },
     ],
     returning: [
-      { vIdx: 0, label: "73Y82", isTransfer: false },
-      { vIdx: 6, label: "Metrobüs 16–21 durak", isTransfer: false },
-      { vIdx: 0, label: "62G", isTransfer: true },
+      { vIdx: 0, label: "M9 Metro", isTransfer: false },
+      { vIdx: 20, label: "Marmaray — Ataköy", isTransfer: false },
+      { vIdx: 0, label: "M2 Metro", isTransfer: true },
     ],
   },
 ];
@@ -149,7 +150,7 @@ export default function UlasimHesaplayici() {
   const shapeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const monthTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [monthLoading, setMonthLoading] = useState(false);
-  const [monthReady, setMonthReady] = useState(false);
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
   const loadToken = useRef(0);
 
   type HistoryRow = {
@@ -253,9 +254,13 @@ export default function UlasimHesaplayici() {
   // Save B — monthly entry (totalWorkdays + profile_days[] + snapshot total) → monthly_entries
   useEffect(() => {
     if (!hydrated || !session) return;
-    if (!monthReady) return; // Aya ait kayıt çekilmeden Save B çalışmasın
+    const periodKey = `${periodYear}-${periodMonth}`;
+    // Yüklü olan ay, şu anki ayla eşleşmiyorsa kayıt yapma — profil verisi eski aydan kalma olabilir.
+    if (loadedKey !== periodKey) {
+      if (monthTimer.current) clearTimeout(monthTimer.current);
+      return;
+    }
     if (monthLoading) {
-      // A new month is being loaded: cancel any pending stale save
       if (monthTimer.current) clearTimeout(monthTimer.current);
       return;
     }
@@ -287,7 +292,7 @@ export default function UlasimHesaplayici() {
       setSyncState(error ? "error" : "saved");
       if (!error) fetchHistory(session.user.id);
     }, 300);
-  }, [profiles, totalWorkdays, periodMonth, periodYear, hydrated, session, monthLoading, monthReady]);
+  }, [profiles, totalWorkdays, periodMonth, periodYear, hydrated, session, monthLoading, loadedKey]);
 
   // Pending save uyarısı — kullanıcı kaydedilmeden sekmeyi kapatmaya kalkarsa onay sor.
   useEffect(() => {
@@ -369,7 +374,6 @@ export default function UlasimHesaplayici() {
   useEffect(() => {
     if (!session || !hydrated) return;
     setMonthLoading(true);
-    setMonthReady(false);
     const token = ++loadToken.current;
     const targetYear = periodYear;
     const targetMonth = periodMonth;
@@ -411,7 +415,7 @@ export default function UlasimHesaplayici() {
         setProfiles([buildStandardTemplate()]);
       }
       setMonthLoading(false);
-      setMonthReady(true);
+      setLoadedKey(`${targetYear}-${targetMonth}`);
     })();
   }, [session, hydrated, periodMonth, periodYear]);
 
@@ -1536,7 +1540,7 @@ function VehicleSelect({
         >
           <ul role="listbox">
             {VEHICLES.map((opt, i) => {
-              if (opt.aktarma) return null; // dropdown'da gizli
+              if (opt.aktarma || opt.hidden) return null; // dropdown'da gizli
               const selected = i === value;
               return (
                 <li key={i}>
